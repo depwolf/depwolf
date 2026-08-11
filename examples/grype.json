@@ -1,0 +1,46 @@
+{
+  "matches": [
+    {
+      "vulnerability": {
+        "id": "CVE-2021-44228",
+        "namespace": "nvd:cpe",
+        "severity": "Critical"
+      },
+      "artifact": {
+        "name": "log4j",
+        "version": "2.14.1",
+        "type": "java-archive"
+      },
+      "matchDetails": [
+        {"type": "exact-direct-match"}
+      ]
+    },
+    {
+      "vulnerability": {
+        "id": "CVE-2021-45046",
+        "namespace": "nvd:cpe",
+        "severity": "High"
+      },
+      "artifact": {
+        "name": "log4j",
+        "version": "2.14.1",
+        "type": "java-archive"
+      }
+    },
+    {
+      "vulnerability": {
+        "id": "CVE-9999-0000",
+        "namespace": "nvd:cpe"
+      },
+      "artifact": {
+        "name": "ghostpkg",
+        "version": "1.0.0",
+        "type": "npm"
+      }
+    }
+  ],
+  "source": {
+    "target": "examples/demo-app/requirements.txt",
+    "type": "file"
+  }
+}

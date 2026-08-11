@@ -1,0 +1,5 @@
+# Plain-text scanner output — any tool that prints CVE IDs (with optional pkg version)
+CVE-2021-44228 log4j 2.14.1
+log4j 2.14.1 CVE-2021-45046
+CVE-9999-0000 ghostpkg 1.0.0
+CVE-2021-30517 chromium 95.0.4638.54
