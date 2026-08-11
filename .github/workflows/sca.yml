@@ -38,7 +38,7 @@ jobs:
 
       - name: Restore cpe_index.db cache
         id: cache-db
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: cpe_index.db
           key: cpe-index-${{ runner.os }}-${{ github.run_id }}
@@ -77,7 +77,7 @@ jobs:
 
       - name: Save cpe_index.db cache
         if: steps.db.outcome == 'success'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: cpe_index.db
           key: cpe-index-${{ runner.os }}-${{ github.run_id }}
