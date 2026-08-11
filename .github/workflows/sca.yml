@@ -47,6 +47,7 @@ jobs:
 
       - name: Obtain cpe_index.db
         id: db
+        continue-on-error: true
         env:
           AVIP_DB_URL: ${{ secrets.AVIP_DB_URL }}
         run: |
@@ -66,11 +67,15 @@ jobs:
         env:
           AVIP_DB_PATH: ${{ github.workspace }}/cpe_index.db
         run: |
+          if [ ! -s cpe_index.db ]; then
+            echo "No index available — skipping self-scan (configure AVIP_DB_URL for real coverage)"
+            exit 0
+          fi
           THRESHOLD="${{ github.event.inputs.threshold || 60 }}"
           depwolf scan . --format sarif --threshold "$THRESHOLD" > depwolf.sarif
 
       - name: Upload SARIF to Code Scanning
-        if: always()
+        if: steps.scan.outcome == 'success' && steps.db.outcome == 'success'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: depwolf.sarif
@@ -83,5 +88,5 @@ jobs:
           key: cpe-index-${{ runner.os }}-${{ github.run_id }}
 
       - name: Fail gate on findings
-        if: steps.scan.outcome != 'success'
+        if: steps.db.outcome == 'success' && steps.scan.outcome != 'success'
         run: exit 1
