@@ -5,6 +5,22 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-12
+
+### Added
+- Index build automation (`.github/workflows/build-index.yml`): `workflow_dispatch`
+  job builds the full signed `cpe_index.db` on a GitHub runner and uploads it as
+  release assets (`cpe_index.db`, `cpe_index.db.sha256`,
+  `cpe_index.db.manifest.json`) for the `index-v1` release.
+
+### Changed
+- `download_index` now pulls the signed `manifest.json` sidecar
+  (`<url>.manifest.json`) so fresh installs verify the Ed25519 signature when
+  `AVIP_INDEX_PUBKEY` is configured.
+- `verify_index`: a signed manifest passes when no pubkey is configured (checksum
+  remains the hard gate); an empty `AVIP_SIGNING_KEY_PATH`/
+  `AVIP_SIGNING_PUBKEY_PATH` env var explicitly disables the default key paths.
+
 ## [Unreleased]
 
 ### Added
@@ -57,3 +73,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output, `depwolf scan` gate with `--threshold`.
 
 [0.1.0]: https://github.com/depwolf/depwolf/releases/tag/v0.1.0
+[0.1.1]: https://github.com/depwolf/depwolf/releases/tag/v0.1.1

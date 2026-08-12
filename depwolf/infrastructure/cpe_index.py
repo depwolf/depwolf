@@ -142,7 +142,7 @@ def download_index(url: str | None = None) -> bool:
     import shutil
     import tempfile
 
-    from depwolf.infrastructure.index_sync import sha256_file, verify_index
+    from depwolf.infrastructure.index_sync import MANIFEST_NAME, sha256_file, verify_index
 
     url = url or os.environ.get("AVIP_DB_URL")
     if not url:
@@ -174,6 +174,17 @@ def download_index(url: str | None = None) -> bool:
             actual = sha256_file(Path(tmp))
             if actual.lower() != expected.lower():
                 raise ValueError(f"download checksum mismatch (expected {expected}, got {actual})")
+
+        # Pull the signed manifest sidecar so signature verification works on a
+        # fresh machine (when AVIP_INDEX_PUBKEY is configured). Optional — a
+        # missing sidecar degrades to checksum + table verification.
+        try:
+            req = urllib.request.Request(f"{url}.manifest.json", headers={"User-Agent": "depwolf/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                (DB_PATH.parent / MANIFEST_NAME).write_bytes(resp.read())
+            logger.info(f"Downloaded manifest sidecar from {url}.manifest.json")
+        except Exception:
+            logger.warning("no .manifest.json sidecar available — signature verification skipped")
 
         os.replace(tmp, DB_PATH)
         ok, detail = verify_index(DB_PATH)

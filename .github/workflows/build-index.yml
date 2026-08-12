@@ -1,0 +1,78 @@
+name: Build CVE index
+
+# Builds the full signed cpe_index.db on a fast GitHub runner and uploads it as
+# release assets for the `index-v1` release:
+#   - cpe_index.db                (set AVIP_DB_URL to this asset URL)
+#   - cpe_index.db.sha256         (checksum sidecar, verified by depwolf sync)
+#   - cpe_index.db.manifest.json  (signed manifest, verified with AVIP_INDEX_PUBKEY)
+#
+# Trigger manually: Actions -> "Build CVE index" -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      req_delay:
+        description: "Seconds to wait between NVD API requests (rate limit)"
+        default: "6.0"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install depwolf
+        run: python -m pip install --quiet .
+
+      - name: Restore index signing key
+        env:
+          KEY: ${{ secrets.AVIP_SIGNING_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            mkdir -p ~/.depwolf
+            printf '%s\n' "$KEY" > ~/.depwolf/index_signing.pem
+            echo "signing key restored ($(wc -c < ~/.depwolf/index_signing.pem) bytes)"
+          else
+            echo "AVIP_SIGNING_KEY not set - manifest will be unsigned"
+          fi
+
+      - name: Build cpe_index.db (NVD/EPSS/KEV)
+        env:
+          AVIP_REQ_DELAY: ${{ github.event.inputs.req_delay || '6.0' }}
+        run: depwolf sync
+
+      - name: Verify signed manifest
+        run: depwolf sync --check
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp ~/.depwolf/cpe_index.db staging/cpe_index.db
+          cp ~/.depwolf/manifest.json staging/cpe_index.db.manifest.json
+          sha256sum staging/cpe_index.db | awk '{print $1}' > staging/cpe_index.db.sha256
+          ls -lh staging/
+
+      - name: Upload to index-v1 release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: index-v1
+          name: CVE index v1
+          body: |
+            Prebuilt, signed CVE index bundle.
+
+            - `cpe_index.db` — sqlite index. Set `AVIP_DB_URL` to this asset's URL, then `depwolf sync`.
+            - `cpe_index.db.sha256` — checksum sidecar (verified automatically on download).
+            - `cpe_index.db.manifest.json` — signed manifest. Set `AVIP_INDEX_PUBKEY` to verify the Ed25519 signature.
+          files: staging/*

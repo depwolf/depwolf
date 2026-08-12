@@ -37,13 +37,23 @@ def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
 
 
 def _signing_key_path() -> Path | None:
-    raw = os.environ.get(SIGNING_KEY_ENV) or str(Path.home() / ".depwolf" / "index_signing.pem")
+    raw = os.environ.get(SIGNING_KEY_ENV, str(Path.home() / ".depwolf" / "index_signing.pem"))
+    if not raw:  # explicitly disabled via empty env var
+        return None
     p = Path(raw)
     return p if p.exists() else None
 
 
+def _pubkey_configured() -> bool:
+    if os.environ.get(PUBKEY_ENV):
+        return True
+    return _public_key_path() is not None
+
+
 def _public_key_path() -> Path | None:
-    raw = os.environ.get("AVIP_SIGNING_PUBKEY_PATH") or str(Path.home() / ".depwolf" / "index_signing.pub.pem")
+    raw = os.environ.get("AVIP_SIGNING_PUBKEY_PATH", str(Path.home() / ".depwolf" / "index_signing.pub.pem"))
+    if not raw:  # explicitly disabled via empty env var
+        return None
     p = Path(raw)
     return p if p.exists() else None
 
@@ -166,6 +176,11 @@ def verify_index(db_path: Path) -> tuple[bool, str]:
     if actual.lower() != expected.lower():
         return False, f"sha256 mismatch (expected {expected}, got {actual})"
     if manifest.get("signed"):
+        if not _pubkey_configured():
+            return True, (
+                f"{db_path.name} sha256 OK — signed manifest present but no pubkey "
+                "configured (set AVIP_INDEX_PUBKEY to verify the signature)"
+            )
         if not _verify_signature(
             json.dumps({"files": files}, sort_keys=True).encode(),
             manifest.get("signature", ""),

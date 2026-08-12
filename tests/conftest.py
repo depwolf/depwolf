@@ -14,6 +14,17 @@ import pytest
 from depwolf.infrastructure.cpe_index import _ensure_schema
 from depwolf.infrastructure.store import SqliteIndexStore
 
+
+@pytest.fixture(autouse=True)
+def _isolate_signing_keys(monkeypatch):
+    """Keep tests hermetic: ignore any real ~/.depwolf signing keypair."""
+    from depwolf.infrastructure import index_sync
+
+    monkeypatch.setenv(index_sync.SIGNING_KEY_ENV, "")
+    monkeypatch.setenv("AVIP_SIGNING_PUBKEY_PATH", "")
+    monkeypatch.delenv(index_sync.PUBKEY_ENV, raising=False)
+
+
 LOG4J_ROWS = [
     (
         "apache",
