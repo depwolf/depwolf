@@ -24,6 +24,11 @@ DB_PATH = Path(
     )
 )
 
+# Default prebuilt-index location: `depwolf sync` (and first `depwolf scan`)
+# download this when no AVIP_DB_URL override is set. Hosted as a GitHub Release
+# asset so `pip install depwolf` + `depwolf scan` works with zero configuration.
+DEFAULT_DB_URL = "https://github.com/depwolf/depwolf/releases/download/index-v1/cpe_index.db"
+
 NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 EPSS_API = "https://api.first.org/data/v1/epss"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -144,10 +149,7 @@ def download_index(url: str | None = None) -> bool:
 
     from depwolf.infrastructure.index_sync import MANIFEST_NAME, sha256_file, verify_index
 
-    url = url or os.environ.get("AVIP_DB_URL")
-    if not url:
-        logger.info("No AVIP_DB_URL set — building index from NVD/EPSS/KEV instead")
-        return False
+    url = url or os.environ.get("AVIP_DB_URL") or DEFAULT_DB_URL
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(suffix=".db", dir=str(DB_PATH.parent))
     os.close(fd)

@@ -5,6 +5,19 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-12
+
+### Added
+- Zero-config first run: `pip install depwolf` → `depwolf scan` (or `depwolf
+  sync`) downloads the prebuilt `cpe_index.db` from the default release CDN when
+  none exists locally. `AVIP_DB_URL`/`AVIP_DB_PATH` remain as overrides.
+- `depwolf sync --full` forces a full rebuild from NVD/EPSS/KEV (default is now
+  a download).
+
+### Changed
+- `download_index` falls back to `DEFAULT_DB_URL` (GitHub Release asset) when
+  neither an argument nor `AVIP_DB_URL` is set.
+
 ## [0.1.1] - 2026-08-12
 
 ### Added
@@ -74,3 +87,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.1.0]: https://github.com/depwolf/depwolf/releases/tag/v0.1.0
 [0.1.1]: https://github.com/depwolf/depwolf/releases/tag/v0.1.1
+[0.1.2]: https://github.com/depwolf/depwolf/releases/tag/v0.1.2

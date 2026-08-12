@@ -115,11 +115,14 @@ def _require_db() -> bool:
     if not DB_PATH.exists():
         from depwolf.infrastructure.cpe_index import download_index
 
-        if os.environ.get("AVIP_DB_URL") and download_index():
+        print(f"[sync] no local CVE index found; downloading prebuilt index to {DB_PATH}...", file=sys.stderr)
+        print("[sync] one-time download (~1.5 GB). This happens only on first run.", file=sys.stderr)
+        if download_index():
             print(f"[sync] downloaded prebuilt index to {DB_PATH}", file=sys.stderr)
         else:
             print(f"error: no CVE index found at {DB_PATH}", file=sys.stderr)
-            print("hint: run 'depwolf sync' to build it from NVD/EPSS/KEV (needs internet),", file=sys.stderr)
+            print("hint: check your internet connection and retry,", file=sys.stderr)
+            print("      or set AVIP_DB_URL to a prebuilt cpe_index.db URL,", file=sys.stderr)
             print("      or set AVIP_DB_PATH to an existing cpe_index.db", file=sys.stderr)
             return False
     try:
@@ -248,7 +251,7 @@ def _remediate(cves: list[str], threshold: int) -> int:
     return 1 if found else 0
 
 
-def _sync(check: bool = False) -> int:
+def _sync(check: bool = False, full: bool = False) -> int:
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -262,11 +265,13 @@ def _sync(check: bool = False) -> int:
         print(f"[sync] index INVALID at {DB_PATH}: {detail}", file=sys.stderr)
         print("hint: run 'depwolf sync' to rebuild, or 'depwolf sync --verify' to re-check", file=sys.stderr)
         return 1
-    if os.environ.get("AVIP_DB_URL"):
+    if full:
+        print("Syncing cpe_index.db from NVD/EPSS/KEV (full rebuild)...", file=sys.stderr)
+    elif os.environ.get("AVIP_DB_URL"):
         print("Syncing cpe_index.db from AVIP_DB_URL (prebuilt index)...", file=sys.stderr)
     else:
-        print(f"Syncing cpe_index.db ({DB_PATH}) from NVD/EPSS/KEV...", file=sys.stderr)
-    build_index(full_sync=False)
+        print(f"Syncing cpe_index.db ({DB_PATH}) — downloading prebuilt index by default...", file=sys.stderr)
+    build_index(full_sync=full)
     return 0
 
 
@@ -346,9 +351,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("cves", nargs="+")
     r.add_argument("--threshold", type=int, default=60)
 
-    sync = sub.add_parser("sync", help="refresh cpe_index.db from NVD/EPSS/KEV")
+    sync = sub.add_parser("sync", help="download or refresh cpe_index.db")
     sync.add_argument(
         "--check", action="store_true", help="verify index integrity (manifest/signature/checksum) without rebuilding"
+    )
+    sync.add_argument(
+        "--full", action="store_true", help="force a full rebuild from NVD/EPSS/KEV instead of downloading"
     )
 
     sub.add_parser("db", help="show index path, verification status, and stats")
@@ -371,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "remediate":
         return _remediate(args.cves, args.threshold)
     if args.command == "sync":
-        return _sync(check=args.check)
+        return _sync(check=args.check, full=args.full)
     if args.command == "db":
         return _db_info()
     if args.command == "ignore":

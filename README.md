@@ -70,10 +70,13 @@ optional `cryptography` enables Ed25519-signed index manifests (`[sync]` extra).
 The FP reducer reads a local SQLite index (`vendor, product, version_start/end,
 cve_id, description, cvss_score, cvss_severity, epss_score, kev, published_date`).
 
+- Out of the box: the first `depwolf sync` (or first `depwolf scan`) downloads a
+  prebuilt index from the depwolf release CDN — no configuration needed.
+- Override the source: `export AVIP_DB_URL=https://.../cpe_index.db`
 - Point at an existing DB: `export AVIP_DB_PATH=/path/to/cpe_index.db`
-- Build/refresh one from NVD + FIRST EPSS + CISA KEV: `depwolf sync` (needs internet)
+- Build/refresh one from NVD + FIRST EPSS + CISA KEV: `depwolf sync --full` (needs internet)
 
-The DB is not shipped with the package (1.5 GB).
+The DB is not shipped with the package (1.5 GB, downloaded once).
 
 ## Usage
 

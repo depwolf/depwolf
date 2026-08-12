@@ -209,3 +209,48 @@ def test_download_index_fetches_manifest_sidecar(tmp_path, monkeypatch):
     assert ci.download_index() is True
     assert target.exists()
     assert (target.parent / MANIFEST_NAME).read_bytes() == manifest_payload
+
+
+def test_download_index_uses_default_url_when_unset(tmp_path, monkeypatch):
+    import sqlite3
+
+    import depwolf.infrastructure.cpe_index as ci
+    from depwolf.infrastructure.cpe_index import _ensure_schema
+
+    db = tmp_path / "cpe_index.db"
+    conn = sqlite3.connect(str(db))
+    _ensure_schema(conn)
+    conn.execute(
+        """INSERT INTO cpe_index (vendor, product, cve_id)
+           VALUES ('apache', 'log4j', 'CVE-2021-44228')"""
+    )
+    conn.execute("CREATE TABLE IF NOT EXISTS pad (b BLOB)")
+    conn.execute("INSERT INTO pad VALUES (?)", (b"x" * 1_100_000,))
+    conn.commit()
+    conn.close()
+    payload = db.read_bytes()
+    digest = sha256_file(db)
+
+    target = tmp_path / "dl2" / "cpe_index.db"
+    monkeypatch.setattr(ci, "DB_PATH", target)
+
+    requested = []
+
+    def fake_urlopen(req, *a, **k):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        requested.append(url)
+        if url.endswith(".sha256"):
+            return _ChunkedResp(f"{digest}  cpe_index.db\n".encode())
+        if url.endswith(".manifest.json"):
+            manifest = {"format": 1, "files": {"cpe_index.db": digest}, "signature": "", "signed": False}
+            return _ChunkedResp(json.dumps(manifest).encode())
+        return _ChunkedResp(payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.delenv("AVIP_DB_URL", raising=False)
+    monkeypatch.delenv("AVIP_INDEX_SHA256", raising=False)
+    monkeypatch.delenv("AVIP_INDEX_PUBKEY", raising=False)
+
+    assert ci.download_index() is True
+    assert target.exists()
+    assert requested[0] == ci.DEFAULT_DB_URL
