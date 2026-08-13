@@ -126,10 +126,25 @@ def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
     assets = entry.get("affected_assets") or []
     asset = assets[0] if assets else entry.get("pkg")
     dep = (dep_index.get(str(asset)) if asset else None) or dep_index.get(str(entry.get("pkg") or ""))
+    installed = entry.get("installed_version")
     if not dep:
-        return None
+        # No native manifest context (e.g. pure scanner-report scan): fall back
+        # to the version the scanner report itself carried so remediation never
+        # degrades a known version into UNKNOWN.
+        return {
+            "installed_version": installed,
+            "ecosystem": entry.get("ecosystem"),
+            "name": str(asset) if asset else None,
+            "group": None,
+            "artifact": str(asset) if asset else entry.get("pkg"),
+            "manifest": entry.get("manifest"),
+            "direct": (True if entry.get("dependency_type") == "DIRECT" else None),
+            "path": entry.get("dependency_path"),
+            "version_confidence": entry.get("version_confidence") or ("EXACT" if installed else "UNKNOWN"),
+            "version_source": entry.get("version_source") or ("dependency_tree" if installed else "unavailable"),
+        }
     return {
-        "installed_version": dep.get("version"),
+        "installed_version": dep.get("version") or installed,
         "ecosystem": dep.get("ecosystem"),
         "name": dep.get("name"),
         "group": dep.get("group"),
@@ -166,7 +181,8 @@ def _attach_remediation(entries: list[dict], dep_index: dict | None = None) -> N
             entry["step_by_step_fix"] = rem.get("step_by_step_fix")
             entry["verification"] = rem.get("verification")
             entry["remediation_source"] = rem.get("remediation_source")
-            entry["applicable"] = rem.get("applicable")
+            if rem.get("applicable") != "UNKNOWN" or not entry.get("applicable"):
+                entry["applicable"] = rem.get("applicable")
             entry["applicability_note"] = rem.get("applicability_note")
             entry["version_confidence"] = rem.get("version_confidence") or entry.get("version_confidence")
             entry["version_source"] = rem.get("version_source") or entry.get("version_source")
