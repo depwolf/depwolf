@@ -5,6 +5,18 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6.4] - 2026-08-13
+
+### Fixed
+- Installed versions survive for real-world package names. The 0.1.6.3
+  version-range gate dropped findings when the stack line could not be split
+  into product + version; trivy and the pom parser emit Java deps as
+  `groupId:artifactId`, so `org.apache.logging.log4j:log4j-core 2.14.0`
+  became a versionless (UNKNOWN) asset and a WebGoat-style Java report scanned
+  to 0 actionable findings. The stack parser now handles Maven coordinates,
+  scoped npm (`@scope/pkg`), and Go module versions, and Maven coordinates are
+  reduced to the artifactId so the version still reaches the funnel.
+
 ## [0.1.6.3] - 2026-08-13
 
 ### Fixed
