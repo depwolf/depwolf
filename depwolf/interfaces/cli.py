@@ -128,8 +128,6 @@ def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
         "manifest": dep.get("manifest"),
         "direct": dep.get("direct"),
         "path": dep.get("path"),
-        "version_confidence": dep.get("version_confidence"),
-        "version_source": dep.get("version_source"),
     }
 
 
@@ -157,12 +155,6 @@ def _attach_remediation(entries: list[dict], dep_index: dict | None = None) -> N
             entry["step_by_step_fix"] = rem.get("step_by_step_fix")
             entry["verification"] = rem.get("verification")
             entry["remediation_source"] = rem.get("remediation_source")
-            entry["applicable"] = rem.get("applicable")
-            entry["applicability_note"] = rem.get("applicability_note")
-            entry["version_confidence"] = rem.get("version_confidence") or entry.get("version_confidence")
-            entry["version_source"] = rem.get("version_source") or entry.get("version_source")
-            entry["dependency_type"] = rem.get("dependency_type") or entry.get("dependency_type")
-            entry["dependency_path"] = rem.get("dependency_path") or entry.get("dependency_path")
             if rem.get("ecosystem"):
                 entry["ecosystem"] = rem.get("ecosystem")
             if rem.get("installed_version"):
