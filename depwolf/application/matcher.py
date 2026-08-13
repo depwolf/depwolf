@@ -17,7 +17,7 @@ import re
 
 from depwolf.application.filters import default_funnel_filters
 from depwolf.domain.funnel import FilterContext, Funnel
-from depwolf.domain.match import asset_matches, row_os
+from depwolf.domain.match import asset_matches, better_confidence, row_os
 from depwolf.domain.model import (
     Asset,
     CVEReference,
@@ -93,30 +93,49 @@ def unignore_cve(cve_id: str, store: CVERepository | None = None) -> dict:
 # ---- batch matching plan (Phase 3) ---------------------------------------
 
 
-def _build_plan(assets: list[Asset], repo: CVERepository) -> dict[str, list[VulnRange]]:
+def _build_plan(assets: list[Asset], repo: CVERepository) -> tuple[dict[str, list[VulnRange]], dict[str, str]]:
     """One-pass plan: resolve every stack product and fetch all CVE ranges.
 
     Constant number of repository calls (2) regardless of stack size, instead
-    of connection-per-dependency. Returns ``cve_id -> ranges``.
+    of connection-per-dependency. Returns ``(cve_id -> ranges, cve_id ->
+    best match confidence)``.
     """
     names = [a.product for a in assets]
     resolved = repo.resolve_products_many(names)
     products: list[tuple[str, str]] = []
+    conf_by_product: dict[tuple[str, str], str] = {}
     for name in names:
-        products.extend((p.vendor, p.product) for p in resolved.get(name, []))
+        for pm in resolved.get(name, []):
+            products.append((pm.vendor, pm.product))
+            conf_by_product[(pm.vendor, pm.product)] = better_confidence(
+                conf_by_product.get((pm.vendor, pm.product)), pm.confidence
+            )
     by_product = repo.cves_for_products(products)
     plan: dict[str, list[VulnRange]] = {}
-    for ranges in by_product.values():
+    confidences: dict[str, str] = {}
+    for (vendor, product), ranges in by_product.items():
+        conf = conf_by_product.get((vendor, product), "heuristic")
         for r in ranges:
             plan.setdefault(r.cve_id, []).append(r)
-    return plan
+            confidences[r.cve_id] = better_confidence(confidences.get(r.cve_id), conf)
+    return plan, confidences
 
 
 def match_plan(stack_text: str, store: CVERepository | None = None) -> dict[str, list[VulnRange]]:
     """Public one-pass plan for a stack (shared by scanner and funnel)."""
+    plan, _ = match_plan_full(stack_text, store)
+    return plan
+
+
+def match_plan_full(
+    stack_text: str, store: CVERepository | None = None
+) -> tuple[dict[str, list[VulnRange]], dict[str, str]]:
+    """Plan plus per-CVE product-match confidence (exact/alias/canonical/fuzzy)."""
     repo = _repo(store)
     assets = _assets(stack_text)
-    return _build_plan(assets, repo) if assets else {}
+    if not assets:
+        return {}, {}
+    return _build_plan(assets, repo)
 
 
 # ---- matching ------------------------------------------------------------
@@ -151,7 +170,7 @@ def _entry_from_row(r: VulnRange, asset: dict) -> dict:
 def match_stack(stack_text: str, store: CVERepository | None = None) -> dict:
     repo = _repo(store)
     assets = _assets(stack_text)
-    plan = _build_plan(assets, repo) if assets else {}
+    plan, _ = _build_plan(assets, repo) if assets else ({}, {})
     results: dict[str, dict] = {}
     for cve_id, rows in plan.items():
         for r in rows:
@@ -241,6 +260,8 @@ def _build_entry(
     entry["epss_score"] = best.epss_score
     entry["kev"] = best.kev
     entry["published_date"] = row.published_date
+    if ctx.match_confidence:
+        entry["match_confidence"] = ctx.match_confidence
     return entry, list(ctx.rows)
 
 
@@ -252,6 +273,7 @@ def prioritize_cves(
     refs: list[CVEReference] | None = None,
     policy: Policy | None = None,
     plan: dict[str, list[VulnRange]] | None = None,
+    plan_conf: dict[str, str] | None = None,
 ) -> dict:
     repo = _repo(store)
     assets = _assets(stack_text)
@@ -264,7 +286,9 @@ def prioritize_cves(
     # CVE not present in the stack (so not_found/not_in_stack stay correct).
     # `plan` may be supplied by the scanner to avoid the double query.
     if plan is None:
-        plan = _build_plan(assets, repo) if assets else {}
+        plan, confidences = _build_plan(assets, repo) if assets else ({}, {})
+    else:
+        confidences = dict(plan_conf or {})
     known = dict(plan)
     extras = [c.strip().upper() for c in cve_ids if c.strip().upper() not in known]
     if extras:
@@ -284,6 +308,7 @@ def prioritize_cves(
             assets=assets,
             os_filter=os_filter,
             ignored=ignored,
+            match_confidence=confidences.get(cve_id),
         )
         funnel.run(ctx)
         if ctx.dropped:
@@ -310,21 +335,28 @@ def prioritize_cves(
 
     prioritized.sort(key=lambda x: x["risk_score"], reverse=True)
     filtered_count = len(filtered_out)
-    not_found_count = sum(1 for x in filtered_out if x["reason"] == "not_found")
     ignored_count = sum(1 for x in filtered_out if x["reason"] == "ignored")
-    fp_count = filtered_count - not_found_count - ignored_count
+    reason_counts = _filter_breakdown(filtered_out)
+    not_applicable = sum(reason_counts.get(r, 0) for r in ("invalid_id", "not_found", "os_mismatch", "not_in_stack"))
+    risk_suppressed = reason_counts.get("low_risk", 0)
+    total = len(cve_ids)
+    reduction_rate = round(filtered_count / total * 100, 1) if total else 0.0
+    not_applicable_rate = round(not_applicable / total * 100, 1) if total else 0.0
     return {
-        "total_scanned": len(cve_ids),
+        "total_scanned": total,
         "invalid_ids": invalid,
-        "found": max(0, len(cve_ids) - invalid - not_found_count - ignored_count),
+        "found": len(prioritized),
+        "actionable": len(prioritized),
         "filtered_out": filtered_count,
-        "filtered_fp": fp_count,
-        "not_found_count": not_found_count,
+        "not_applicable": not_applicable,
+        "risk_suppressed": risk_suppressed,
         "ignored_count": ignored_count,
-        "false_positive_rate": round(fp_count / len(cve_ids) * 100, 1) if cve_ids else 0,
+        "reduction_rate": reduction_rate,
+        "not_applicable_rate": not_applicable_rate,
+        "false_positive_rate": not_applicable_rate,  # legacy key: proven non-applicable only
         "prioritized": prioritized,
         "filtered_details": filtered_out,
-        "filtered_reasons": _filter_breakdown(filtered_out),
+        "filtered_reasons": reason_counts,
         "ranges": ranges_by_cve,
         "fix_now": [p for p in prioritized if p["risk_score"] >= 80][:5],
         "fix_week": [p for p in prioritized if 60 <= p["risk_score"] < 80][:5],

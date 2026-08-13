@@ -72,3 +72,38 @@ def test_nvd_real_world_examples():
     assert _version_in_range("2.0", "2.0", None, None, "2.15.0")
     assert not _version_in_range("2.15.0", "2.0", None, None, "2.15.0")
     assert _version_in_range("1.8", "1.0", None, None, "1.9")
+
+
+def test_inclusive_start_boundary():
+    assert _version_in_range("2.0", "2.0", None, None, "2.15.0")
+    assert not _version_in_range("1.9.9", "2.0", None, None, "2.15.0")
+
+
+def test_exclusive_start_boundary():
+    assert _version_in_range("2.0.1", None, "2.0", None, "2.15.0")
+    assert not _version_in_range("2.0", None, "2.0", None, "2.15.0")
+
+
+def test_inclusive_end_boundary():
+    assert _version_in_range("2.15.0", "2.0", None, "2.15.0", None)
+    assert not _version_in_range("2.15.1", "2.0", None, "2.15.0", None)
+
+
+def test_exclusive_end_boundary():
+    assert _version_in_range("2.14.9", "2.0", None, None, "2.15.0")
+    assert not _version_in_range("2.15.0", "2.0", None, None, "2.15.0")
+
+
+def test_single_bound_range_low_and_high():
+    assert _version_in_range("2.14.9", "2.0", None, None, "2.15.0")
+    assert not _version_in_range("1.5", "2.0", None, None, "2.15.0")
+    assert not _version_in_range("3.0", "2.0", None, None, "2.15.0")
+
+
+def test_format_range_human_readable():
+    from depwolf.domain.versions import format_range
+
+    assert format_range("2.0", None, None, "2.15.0") == ">= 2.0 and < 2.15.0"
+    assert format_range(None, "2.0", None, None) == "> 2.0"
+    assert format_range(None, None, "2.15.0", None) == "<= 2.15.0"
+    assert format_range(None, None, None, None) == "all versions"

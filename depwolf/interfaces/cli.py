@@ -8,6 +8,7 @@ DB-grounded) -> remediation (DB-grounded fixes + optional AI executive summary).
 Commands:
   scan <input...>          run the full pipeline on one or more scanner reports
   remediate <CVE...>       remediation only, for direct CVE IDs
+  verify <CVE...>          FIXED / STILL VULNERABLE / UNABLE TO VERIFY verdict
   sync                     build/refresh cpe_index.db from NVD/EPSS/KEV (internet)
   ignore / unignore <CVE>  persist CVEs to the ignore list
   export <report.json>     re-render a saved JSON report as SARIF/table
@@ -26,7 +27,7 @@ from pathlib import Path
 from depwolf import __version__
 from depwolf.application.ingest import dedupe_cves, extract_cves, findings_stack
 from depwolf.application.matcher import ignore_cve, prioritize_cves, unignore_cve
-from depwolf.application.remediation import generate_remediation
+from depwolf.application.remediation import generate_remediation, verify_fix
 from depwolf.domain.model import CVEReference
 from depwolf.infrastructure.cpe_index import DB_PATH
 from depwolf.interfaces.report import build_json_report, build_sarif, render_table
@@ -107,14 +108,32 @@ def _collect_findings(inputs: list[str]) -> list[CVEReference]:
     return dedupe_cves(findings)
 
 
-def _attach_remediation(entries: list[dict]) -> None:
+def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
+    assets = entry.get("affected_assets") or []
+    asset = assets[0] if assets else entry.get("pkg")
+    dep = (dep_index.get(str(asset)) if asset else None) or dep_index.get(str(entry.get("pkg") or ""))
+    if not dep:
+        return None
+    return {
+        "installed_version": dep.get("version"),
+        "ecosystem": dep.get("ecosystem"),
+        "name": dep.get("name"),
+        "group": dep.get("group"),
+        "artifact": dep.get("artifact") or dep.get("name"),
+        "manifest": dep.get("manifest"),
+        "direct": dep.get("direct"),
+        "path": dep.get("path"),
+    }
+
+
+def _attach_remediation(entries: list[dict], dep_index: dict | None = None) -> None:
     seen = set()
     for entry in entries:
         cve = entry.get("cve_id")
         if not cve or cve in seen:
             continue
         seen.add(cve)
-        rem = generate_remediation(cve)
+        rem = generate_remediation(cve, context=_remediation_context(dep_index or {}, entry))
         if rem.get("found"):
             entry["remediation_summary"] = rem.get("executive_summary")
             entry["root_cause"] = rem.get("root_cause")
@@ -122,10 +141,19 @@ def _attach_remediation(entries: list[dict]) -> None:
             entry["product"] = rem.get("product")
             entry["affected_versions"] = rem.get("affected_versions")
             entry["fixed_version"] = rem.get("fixed_version") or entry.get("fixed_version")
+            entry["minimum_safe_version"] = rem.get("minimum_safe_version")
+            entry["recommended_action"] = rem.get("recommended_action")
             entry["patch_commands"] = rem.get("patch_commands")
+            entry["file_change"] = rem.get("file_change")
+            entry["compatibility_warning"] = rem.get("compatibility_warning")
+            entry["transitive_explanation"] = rem.get("transitive_explanation")
             entry["step_by_step_fix"] = rem.get("step_by_step_fix")
             entry["verification"] = rem.get("verification")
             entry["remediation_source"] = rem.get("remediation_source")
+            if rem.get("ecosystem"):
+                entry["ecosystem"] = rem.get("ecosystem")
+            if rem.get("installed_version"):
+                entry["installed_version"] = rem.get("installed_version")
 
 
 def _require_db() -> bool:
@@ -223,7 +251,14 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
             native_stack = native.get("stack") or ""
             stack = "\n".join(dict.fromkeys((native_stack + "\n" + stack).splitlines()))
 
-    result = prioritize_cves(cve_ids, stack or None, os_filter, refs=findings, plan=native and native.get("plan"))
+    result = prioritize_cves(
+        cve_ids,
+        stack or None,
+        os_filter,
+        refs=findings,
+        plan=native and native.get("plan"),
+        plan_conf=native and native.get("plan_conf"),
+    )
 
     result["total_scanned"] = len(cve_ids)
     result["found"] = len(result.get("prioritized", []))
@@ -234,7 +269,14 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
         result["deps"] = native["deps"]
 
     if with_remediation:
-        _attach_remediation(result.get("prioritized", []))
+        dep_index = None
+        if native:
+            dep_index = {}
+            for d in native["deps"]:
+                dep_index[d["name"]] = d
+                if d.get("artifact"):
+                    dep_index.setdefault(d["artifact"], d)
+        _attach_remediation(result.get("prioritized", []), dep_index)
     else:
         print("[scan] remediation skipped (--no-remediate)", file=sys.stderr)
 
@@ -244,11 +286,18 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
 def _merge_native(a: dict | None, b: dict) -> dict:
     if a is None:
         return b
+    plan = dict(a.get("plan") or {})
+    for cve_id, rows in (b.get("plan") or {}).items():
+        plan.setdefault(cve_id, rows)
+    plan_conf = dict(a.get("plan_conf") or {})
+    plan_conf.update(b.get("plan_conf") or {})
     return {
         "manifests": a["manifests"] + b["manifests"],
         "deps": a["deps"] + b["deps"],
         "stack": "\n".join(dict.fromkeys((a["stack"] + "\n" + b["stack"]).splitlines())),
         "cve_ids": list(dict.fromkeys(a["cve_ids"] + b["cve_ids"])),
+        "plan": plan,
+        "plan_conf": plan_conf,
     }
 
 
@@ -282,6 +331,24 @@ def _remediate(cves: list[str], threshold: int) -> int:
     print(json.dumps(out, indent=2, default=str))
     found = [r for r in results if r.get("found") and (r.get("risk_score") or 0) >= threshold]
     return 1 if found else 0
+
+
+def _verify(cves: list[str], version: str | None) -> int:
+    if not _require_db():
+        return 2
+    results = []
+    for cve in cves:
+        status = verify_fix(cve, version)
+        results.append({"cve_id": cve, "installed_version": version, "status": status})
+        print(f"{cve}: {status.replace('_', ' ').upper()}")
+    if version is None:
+        print(
+            "note: pass --version <installed> to get a definitive FIXED / STILL VULNERABLE verdict; "
+            "without it the status is always UNABLE TO VERIFY (never treated as FIXED).",
+            file=sys.stderr,
+        )
+    print(json.dumps(results, indent=2, default=str))
+    return 0
 
 
 def _sync(check: bool = False, full: bool = False) -> int:
@@ -384,6 +451,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("cves", nargs="+")
     r.add_argument("--threshold", type=int, default=60)
 
+    v = sub.add_parser(
+        "verify",
+        help=(
+            "check whether an installed version still needs remediation for a CVE "
+            "(FIXED / STILL VULNERABLE / UNABLE TO VERIFY)"
+        ),
+    )
+    v.add_argument("cves", nargs="+")
+    v.add_argument("--version", default=None, help="installed version to check against the CVE's affected ranges")
+
     sync = sub.add_parser("sync", help="download or refresh cpe_index.db")
     sync.add_argument(
         "--check", action="store_true", help="verify index integrity (manifest/signature/checksum) without rebuilding"
@@ -411,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         return _scan(args.inputs, args.os, args.threshold, not args.no_remediate, args.format, args.save, args.stack)
     if args.command == "remediate":
         return _remediate(args.cves, args.threshold)
+    if args.command == "verify":
+        return _verify(args.cves, args.version)
     if args.command == "sync":
         return _sync(check=args.check, full=args.full)
     if args.command == "db":

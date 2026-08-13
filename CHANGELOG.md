@@ -5,6 +5,32 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-13
+
+### Added
+- Product-match confidence on every finding (`exact` / `alias` / `canonical` /
+  `fuzzy` / `heuristic`); `exact`/`alias`/`canonical` are HIGH confidence.
+- Dependency identity in manifest parsing: Maven `groupId`/`artifactId`, npm
+  scope, Go module path, plus direct/transitive and dependency-path detection
+  for `package-lock.json` (v1) and `Cargo.lock`.
+- `depwolf verify <CVE...> --version <v>` → `FIXED` / `STILL VULNERABLE` /
+  `UNABLE TO VERIFY` (UNABLE is never treated as FIXED).
+- Ecosystem-aware remediation (Maven, npm, pip, Go, Cargo, Bundler, Composer):
+  exact patch commands, a concrete `file_change` before/after, `minimum_safe_version`,
+  transitive-dependency explanation, and a major-version `compatibility_warning`.
+  Template verification steps are always present (never null).
+- Reporting semantics: findings are now labelled `actionable` / `not_applicable`
+  / `risk_suppressed` with an `overall reduction` rate; legacy `fp-rate` only
+  counts proven non-applicable CVEs.
+
+### Changed
+- Filter explanations distinguish "product not in project" from "installed
+  version outside the vulnerable range (with the exact range)".
+- `low_risk` detail now includes the exact risk score and the 35 threshold.
+- `render_table` adds `Version` and `Confidence` columns.
+- AI remediation prompt rewritten to answer 9 concrete remediation questions
+  over DB-verified facts only; the model never supplies versions/CVSS/coordinates.
+
 ## [0.1.4] - 2026-08-13
 
 ### Fixed

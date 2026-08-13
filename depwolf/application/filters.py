@@ -8,8 +8,9 @@ codes stay byte-compatible.
 from __future__ import annotations
 
 from depwolf.domain.funnel import FilterContext
-from depwolf.domain.match import asset_matches, row_os
+from depwolf.domain.match import asset_matches, fuzzy_product_match, row_os
 from depwolf.domain.risk import calculate_risk
+from depwolf.domain.versions import _normalize, format_range
 
 
 def _best_risk_result(ctx: FilterContext):
@@ -85,8 +86,35 @@ class NotInStackFilter:
             return
         affected = [a.product for a in ctx.assets if any(asset_matches(a, r) for r in ctx.rows)]
         if not affected:
-            ctx.reason = self.name
-            ctx.detail = "Affected product/version is not present in your stack"
+            product_ok = [
+                a for a in ctx.assets if any(fuzzy_product_match(_normalize(a.product), r.product) for r in ctx.rows)
+            ]
+            row_products = sorted({r.product for r in ctx.rows if r.product})
+            if product_ok:
+                a = product_ok[0]
+                ranges = " or ".join(
+                    dict.fromkeys(
+                        format_range(
+                            r.version_start_including,
+                            r.version_start_excluding,
+                            r.version_end_including,
+                            r.version_end_excluding,
+                        )
+                        for r in ctx.rows
+                        if fuzzy_product_match(_normalize(a.product), r.product)
+                    )
+                )
+                ctx.reason = self.name
+                ctx.detail = (
+                    f"Installed version {a.version or 'unknown'} of {a.product} is outside the "
+                    f"vulnerable range ({ranges})."
+                )
+            else:
+                ctx.reason = self.name
+                ctx.detail = (
+                    f"CVE affects {', '.join(row_products) or 'a product not present in the index'}, "
+                    "but no matching dependency exists in the project."
+                )
             ctx.risk_score = _best_risk(ctx)
             ctx.severity = _severity_of(ctx)
             return
@@ -105,7 +133,7 @@ class LowRiskFilter:
         ctx.severity = _severity_of(ctx)
         if ctx.risk_score < 35:
             ctx.reason = self.name
-            ctx.detail = "Risk score below action threshold"
+            ctx.detail = f"Applicable vulnerability has risk score {ctx.risk_score}, below the risk threshold 35."
 
 
 def default_funnel_filters() -> list:

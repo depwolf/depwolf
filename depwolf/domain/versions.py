@@ -64,3 +64,17 @@ def _version_in_range(version: str, start_incl, start_excl, end_incl, end_excl) 
     if end_excl and v >= _version_key(end_excl):
         return False
     return True
+
+
+def format_range(start_incl, start_excl, end_incl, end_excl) -> str:
+    """Human-readable version range, e.g. '>= 2.0, < 2.15.0'."""
+    parts = []
+    if start_incl:
+        parts.append(f">= {start_incl}")
+    elif start_excl:
+        parts.append(f"> {start_excl}")
+    if end_incl:
+        parts.append(f"<= {end_incl}")
+    elif end_excl:
+        parts.append(f"< {end_excl}")
+    return " and ".join(parts) if parts else "all versions"

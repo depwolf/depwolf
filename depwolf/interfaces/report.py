@@ -94,30 +94,46 @@ def _sarif_level(severity: str | None) -> str:
 
 def render_table(result: dict) -> str:
     lines = []
-    lines.append("=" * 90)
+    lines.append("=" * 100)
     lines.append(" DEPWOLF — prioritized findings")
+    total = result.get("total_scanned", 0)
     lines.append(
-        f" total: {result.get('total_scanned')}  found: {result.get('found')}  "
-        f"filtered: {result.get('filtered_out')}  fp-rate: {result.get('false_positive_rate')}%"
+        f" candidates: {total}  actionable: {result.get('actionable', result.get('found'))}  "
+        f"not_applicable: {result.get('not_applicable')}  "
+        f"risk_suppressed: {result.get('risk_suppressed')}"
     )
-    lines.append("=" * 90)
-    header = f"{'CVE':<18}{'Pkg':<20}{'Sev':<10}{'Risk':<7}{'Fixed':<12}{'Patch'}"
+    reduction = result.get("reduction_rate")
+    na_rate = result.get("not_applicable_rate")
+    lines.append(
+        f" overall reduction: {reduction}%  "
+        f"(not_applicable: {na_rate}%, legacy fp-rate: {result.get('false_positive_rate')}%)"
+    )
+    lines.append("=" * 100)
+    header = (
+        f"{'CVE':<18}{'Package':<22}{'Version':<12}{'Severity':<10}"
+        f"{'Risk':<7}{'Fixed':<12}{'Priority':<12}{'Confidence'}"
+    )
     lines.append(header)
-    lines.append("-" * 90)
+    lines.append("-" * 100)
     for f in result.get("prioritized", []):
         assets = f.get("affected_assets")
         pkg = assets[0] if assets else (f.get("pkg") or "?")
+        ver = f.get("installed_version") or f.get("version") or "-"
         sev = f.get("severity") or "?"
         risk = f.get("risk_score")
         fixed = f.get("fixed_version") or "-"
         pp = f.get("patch_priority") or "-"
-        lines.append(f"{f.get('cve_id', '?'):<18}{str(pkg):<20}{str(sev):<10}{str(risk):<7}{str(fixed):<12}{pp}")
+        conf = f.get("match_confidence") or "-"
+        lines.append(
+            f"{f.get('cve_id', '?'):<18}{str(pkg):<22}{str(ver):<12}{str(sev):<10}"
+            f"{str(risk):<7}{str(fixed):<12}{str(pp):<12}{conf}"
+        )
     if result.get("filtered_details"):
-        lines.append("-" * 90)
+        lines.append("-" * 100)
         from collections import Counter
 
         reasons = Counter(d.get("reason") for d in result["filtered_details"])
         for reason, n in reasons.most_common():
             lines.append(f" filtered: {n}x {reason}")
-    lines.append("=" * 90)
+    lines.append("=" * 100)
     return "\n".join(lines)

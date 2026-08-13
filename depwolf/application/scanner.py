@@ -70,8 +70,25 @@ def _parse_requirements(path: Path) -> list[dict]:
         eq = re.match(r"^==\s*([0-9][0-9a-zA-Z.+\-]*)", spec)
         if eq:
             version = eq.group(1)
-        deps.append({"name": name, "version": version, "ecosystem": "python"})
+        deps.append(
+            {
+                "name": name,
+                "version": version,
+                "ecosystem": "python",
+                "artifact": name,
+                "direct": True,
+            }
+        )
     return deps
+
+
+def _npm_split(name: str) -> tuple[str | None, str]:
+    """Split an npm package name into (scope, bare-name)."""
+    if name.startswith("@"):
+        parts = name[1:].split("/", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+    return None, name.rsplit("/", 1)[-1]
 
 
 def _parse_package_json(path: Path) -> list[dict]:
@@ -82,7 +99,17 @@ def _parse_package_json(path: Path) -> list[dict]:
         return deps
     for section in ("dependencies", "devDependencies"):
         for name, spec in (data.get(section) or {}).items():
-            deps.append({"name": name, "version": _clean_version(str(spec)), "ecosystem": "npm"})
+            group, artifact = _npm_split(str(name))
+            deps.append(
+                {
+                    "name": str(name),
+                    "version": _clean_version(str(spec)),
+                    "ecosystem": "npm",
+                    "group": group,
+                    "artifact": artifact,
+                    "direct": True,
+                }
+            )
     return deps
 
 
@@ -92,12 +119,50 @@ def _parse_package_lock(path: Path) -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except Exception:
         return deps
-    seen = set()
-    for name, info in (data.get("dependencies") or {}).items():
-        version = _clean_version(info.get("version") if isinstance(info, dict) else str(info))
-        if name not in seen:
-            seen.add(name)
-            deps.append({"name": name, "version": version, "ecosystem": "npm"})
+    seen: set[tuple[str, str | None]] = set()
+
+    def add(name: str, version: str | None, direct: bool | None, chain: tuple[str, ...] | None) -> None:
+        version = _clean_version(version)
+        key = (name, version)
+        if key in seen:
+            return
+        seen.add(key)
+        group, artifact = _npm_split(name)
+        d: dict = {
+            "name": name,
+            "version": version,
+            "ecosystem": "npm",
+            "group": group,
+            "artifact": artifact,
+            "direct": direct,
+        }
+        if chain:
+            d["path"] = chain
+        deps.append(d)
+
+    deps_map = data.get("dependencies")
+    if isinstance(deps_map, dict):
+
+        def walk(items: dict, chain: tuple[str, ...], direct: bool | None) -> None:
+            for name, info in items.items():
+                info = info if isinstance(info, dict) else {}
+                add(str(name), info.get("version"), direct, chain + (str(name),))
+                sub = info.get("dependencies")
+                if isinstance(sub, dict):
+                    walk(sub, chain + (str(name),), False)
+
+        walk(deps_map, (), True)
+    pkgs = data.get("packages")
+    if isinstance(pkgs, dict):
+        for loc, info in pkgs.items():
+            if not loc:
+                continue
+            info = info if isinstance(info, dict) else {}
+            name = str(loc)
+            if name.startswith("node_modules/"):
+                name = name[len("node_modules/") :]
+            group, artifact = _npm_split(name)
+            add(f"@{group}/{artifact}" if group else artifact, info.get("version"), None, None)
     return deps
 
 
@@ -118,7 +183,17 @@ def _parse_yarn_lock(path: Path) -> list[dict]:
         if name and stripped.startswith("version"):
             m = re.match(r'^version\s+"?([^"\s]+)', stripped)
             if m:
-                deps.append({"name": name, "version": _clean_version(m.group(1)), "ecosystem": "npm"})
+                group, artifact = _npm_split(name)
+                deps.append(
+                    {
+                        "name": name,
+                        "version": _clean_version(m.group(1)),
+                        "ecosystem": "npm",
+                        "group": group,
+                        "artifact": artifact,
+                        "direct": None,
+                    }
+                )
             name = None
     return deps
 
@@ -130,14 +205,23 @@ def _parse_go_mod(path: Path) -> list[dict]:
     except Exception:
         return deps
     for line in text.splitlines():
+        indirect = "// indirect" in line
         line = line.split("//")[0].strip()
         m = re.match(r"^([^\s]+)\s+(v[0-9][0-9a-zA-Z.+\-]*)$", line)
         if not m or m.group(1) in ("go", "toolchain"):
             continue
-        name = m.group(1)
-        if "/" in name:
-            name = name.rsplit("/", 1)[-1]
-        deps.append({"name": name, "version": m.group(2), "ecosystem": "go"})
+        module = m.group(1)
+        name = module.rsplit("/", 1)[-1]
+        deps.append(
+            {
+                "name": name,
+                "version": m.group(2),
+                "ecosystem": "go",
+                "group": module,
+                "artifact": name,
+                "direct": not indirect,
+            }
+        )
     return deps
 
 
@@ -158,7 +242,16 @@ def _parse_pom(path: Path) -> list[dict]:
         version = _clean_version(v.group(1).strip()) if v else None
         if version and v is not None and "${" in v.group(1):
             version = None
-        deps.append({"name": f"{group}:{artifact}" if group else artifact, "version": version, "ecosystem": "java"})
+        deps.append(
+            {
+                "name": f"{group}:{artifact}" if group else artifact,
+                "version": version,
+                "ecosystem": "java",
+                "group": group,
+                "artifact": artifact,
+                "direct": True,
+            }
+        )
     return deps
 
 
@@ -172,7 +265,15 @@ def _parse_gemfile_lock(path: Path) -> list[dict]:
         m = re.match(r"^\s{4}(\S+)\s+\(([^)]+)\)", line)
         if not m:
             continue
-        deps.append({"name": m.group(1), "version": _clean_version(m.group(2)), "ecosystem": "ruby"})
+        deps.append(
+            {
+                "name": m.group(1),
+                "version": _clean_version(m.group(2)),
+                "ecosystem": "ruby",
+                "artifact": m.group(1),
+                "direct": True,
+            }
+        )
     return deps
 
 
@@ -182,22 +283,79 @@ def _parse_cargo_lock(path: Path) -> list[dict]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return deps
-    name = version = None
+    packages: list[dict] = []
+    current: dict | None = None
     for line in text.splitlines():
-        if line.strip() == "[[package]]":
-            if name and version:
-                deps.append({"name": name, "version": version, "ecosystem": "rust"})
-            name = version = None
+        stripped = line.strip()
+        if stripped == "[[package]]":
+            if current and current.get("name") and current.get("version"):
+                packages.append(current)
+            current = {"dependencies": []}
             continue
-        m = re.match(r'^\s*name\s*=\s*"([^"]+)"', line)
-        if m:
-            name = m.group(1)
+        if current is None:
             continue
-        m = re.match(r'^\s*version\s*=\s*"([^"]+)"', line)
+        m = re.match(r'^name\s*=\s*"([^"]+)"', stripped)
         if m:
-            version = _clean_version(m.group(1))
-    if name and version:
-        deps.append({"name": name, "version": version, "ecosystem": "rust"})
+            current["name"] = m.group(1)
+            continue
+        m = re.match(r'^version\s*=\s*"([^"]+)"', stripped)
+        if m:
+            current["version"] = _clean_version(m.group(1))
+            continue
+        if stripped == "dependencies = [" or (current.get("in_deps") and stripped == ","):
+            current["in_deps"] = True
+            continue
+        if stripped.startswith("dependencies = ["):
+            current["in_deps"] = True
+            inline = re.findall(r'"([^"]+)"', stripped)
+            if inline:
+                current["dependencies"].extend(inline)
+                current["in_deps"] = False
+            continue
+        if current.get("in_deps"):
+            m = re.match(r'^"([^"]+)"', stripped)
+            if m:
+                current["dependencies"].append(m.group(1))
+                continue
+            if stripped.startswith("]"):
+                current["in_deps"] = False
+                continue
+    if current and current.get("name") and current.get("version"):
+        packages.append(current)
+
+    depended_on = {dep for p in packages for dep in p.get("dependencies", [])}
+    roots = [p["name"] for p in packages if p["name"] not in depended_on]
+    index: dict[str, dict] = {p["name"]: p for p in packages}
+
+    def find_path(target: str) -> tuple[str, ...] | None:
+        for root in roots:
+            seen: set[str] = set()
+            stack: list[tuple[str, tuple[str, ...]]] = [(root, (root,))]
+            while stack:
+                node, chain = stack.pop()
+                if node == target:
+                    return chain
+                if node in seen:
+                    continue
+                seen.add(node)
+                for dep in index.get(node, {}).get("dependencies", []):
+                    if dep not in chain:
+                        stack.append((dep, chain + (dep,)))
+        return None
+
+    for p in packages:
+        direct = p["name"] in roots
+        dep_path = (p["name"],) if direct else find_path(p["name"])
+        deps.append(
+            {
+                "name": p["name"],
+                "version": p["version"],
+                "ecosystem": "rust",
+                "artifact": p["name"],
+                "direct": direct,
+                "path": dep_path,
+            }
+        )
     return deps
 
 
@@ -210,7 +368,7 @@ def _parse_pipfile_lock(path: Path) -> list[dict]:
     for section in ("default", "develop"):
         for name, info in (data.get(section) or {}).items():
             version = _clean_version(info.get("version")) if isinstance(info, dict) else None
-            deps.append({"name": name, "version": version, "ecosystem": "python"})
+            deps.append({"name": name, "version": version, "ecosystem": "python", "artifact": name})
     return deps
 
 
@@ -224,7 +382,15 @@ def _parse_composer_lock(path: Path) -> list[dict]:
         name = (pkg.get("name") or "").split("/")[-1]
         if not name:
             continue
-        deps.append({"name": name, "version": _clean_version(pkg.get("version")), "ecosystem": "php"})
+        deps.append(
+            {
+                "name": name,
+                "version": _clean_version(pkg.get("version")),
+                "ecosystem": "php",
+                "artifact": name,
+                "direct": None,
+            }
+        )
     return deps
 
 
@@ -240,7 +406,15 @@ def _parse_pyproject(path: Path) -> list[dict]:
     )
     for m in re.finditer(pattern, text):
         name, op, ver = m.group(1), m.group(2), m.group(3)
-        deps.append({"name": name, "version": ver if op == "==" else None, "ecosystem": "python"})
+        deps.append(
+            {
+                "name": name,
+                "version": ver if op == "==" else None,
+                "ecosystem": "python",
+                "artifact": name,
+                "direct": True,
+            }
+        )
     return deps
 
 
@@ -310,7 +484,7 @@ def deps_to_stack(deps: list[dict]) -> str:
 
 def collect_project(root: Path, store: CVERepository | None = None) -> dict:
     """Discover manifests and resolve the CVE candidates they map to (no funnel)."""
-    from depwolf.application.matcher import match_plan
+    from depwolf.application.matcher import match_plan_full
 
     manifests = find_manifests(root)
     deps = parse_manifests(manifests)
@@ -322,14 +496,16 @@ def collect_project(root: Path, store: CVERepository | None = None) -> dict:
             "deps": [],
             "stack": "",
             "cve_ids": [],
+            "plan_conf": {},
         }
-    plan = match_plan(stack, store=store)
+    plan, plan_conf = match_plan_full(stack, store=store)
     return {
         "manifests": [str(m) for m in manifests],
         "deps": deps,
         "stack": stack,
         "cve_ids": list(plan),
         "plan": plan,
+        "plan_conf": plan_conf,
     }
 
 
@@ -351,7 +527,13 @@ def scan_project(root: Path, store: CVERepository | None = None) -> dict:
             "deps": [],
             "stack": "",
         }
-    result = prioritize_cves(collected["cve_ids"], collected["stack"], store=store, plan=collected["plan"])
+    result = prioritize_cves(
+        collected["cve_ids"],
+        collected["stack"],
+        store=store,
+        plan=collected["plan"],
+        plan_conf=collected["plan_conf"],
+    )
     result["source"] = "manifest-scan"
     result["manifests"] = collected["manifests"]
     result["deps"] = collected["deps"]

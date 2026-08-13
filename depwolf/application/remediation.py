@@ -17,7 +17,7 @@ from depwolf.domain.model import VulnRange
 from depwolf.domain.ports import CVERepository
 from depwolf.domain.priority import compute_patch_priority
 from depwolf.domain.risk import calculate_risk
-from depwolf.domain.versions import _version_key
+from depwolf.domain.versions import _version_in_range, _version_key
 from depwolf.infrastructure.store import SqliteIndexStore
 
 CWE_DESCRIPTIONS: dict[str, str] = {
@@ -67,6 +67,67 @@ def _range_str(row: VulnRange) -> str:
     elif row.version_end_excluding:
         parts.append(f"< {row.version_end_excluding}")
     return " and ".join(parts) if parts else "all versions"
+
+
+def _installed_applicability(installed_version: str | None, ranges: list[tuple]) -> bool | None:
+    """True if installed_version falls inside any affected range.
+
+    None when there is no installed version to compare (unknown). A range with
+    no version bounds means "all versions affected", so any installed version
+    is applicable (True).
+    """
+    if not installed_version:
+        return None
+    if not ranges:
+        return None
+    bounded = False
+    for bounds in ranges:
+        if not any(b is not None for b in bounds):
+            return True
+        bounded = True
+        if _version_in_range(installed_version, *bounds):
+            return True
+    if not bounded:
+        return True
+    return False
+
+
+def verify_fix(
+    cve_id: str,
+    installed_version: str | None,
+    store: CVERepository | None = None,
+    rows: list[VulnRange] | None = None,
+) -> str:
+    """Remediation status for an installed version.
+
+    Returns one of "fixed", "still_vulnerable", "unable_to_verify". UNABLE is
+    never mapped to FIXED: any missing/broken input returns "unable_to_verify".
+    """
+    if not cve_id or not installed_version:
+        return "unable_to_verify"
+    if rows is None:
+        try:
+            store = store or SqliteIndexStore()
+            rows = store.cve(cve_id)
+        except Exception:
+            return "unable_to_verify"
+    if not rows:
+        return "unable_to_verify"
+    ranges = [
+        (
+            r.version_start_including,
+            r.version_start_excluding,
+            r.version_end_including,
+            r.version_end_excluding,
+        )
+        for r in rows
+    ]
+    status = _installed_applicability(installed_version, ranges)
+    if status is True:
+        return "still_vulnerable"
+    if status is False:
+        return "fixed"
+    return "unable_to_verify"
 
 
 def _db_lookup(
@@ -143,6 +204,15 @@ def _db_lookup(
         "published_date": best_row.published_date,
         "affected_versions": version_rows[:25],
         "fixed_version": _fixed_of(best_row),
+        "ranges": [
+            (
+                r.version_start_including,
+                r.version_start_excluding,
+                r.version_end_including,
+                r.version_end_excluding,
+            )
+            for r in cands
+        ],
     }
 
 
@@ -229,6 +299,168 @@ def _patch_commands(product: str, vendor: str, fixed_version: str | None, cve_id
     ]
 
 
+_ECOSYSTEM_LABELS = {
+    "java": "Maven (Java)",
+    "npm": "npm (JavaScript/TypeScript)",
+    "python": "pip (Python)",
+    "go": "Go modules",
+    "rust": "Cargo (Rust)",
+    "ruby": "Bundler (Ruby)",
+    "php": "Composer (PHP)",
+}
+
+
+def _ecosystem_patch(
+    ecosystem: str,
+    artifact: str,
+    group: str | None,
+    installed: str | None,
+    fixed: str | None,
+    cve_id: str,
+) -> list[str]:
+    """Ecosystem-aware remediation commands. Versions are always DB-grounded."""
+    if not fixed:
+        return [
+            f"# No fixed version published for {cve_id} yet.",
+            "# Track the vendor advisory and apply its recommended mitigation,",
+            "# or pin the dependency to a patched release when one lands.",
+        ]
+    if ecosystem == "java":
+        coord = f"{group}:{artifact}" if group else artifact
+        return [
+            f"# Direct Maven dependency — bump <version> for {coord} in pom.xml:",
+            f"mvn versions:use-dep-version -Dincludes={coord} -DdepVersion={fixed}",
+            "# Or, when the version is managed via a <properties> entry:",
+            f"mvn versions:use-property -Dproperty=<property>.version -DnewVersion={fixed}",
+            "# Verify the resolved version:",
+            f"mvn dependency:tree -Dincludes={coord}",
+        ]
+    if ecosystem == "npm":
+        pkg = f"@{group}/{artifact}" if group else artifact
+        return [
+            "# Upgrade the installed package to the fixed version:",
+            f"npm install {pkg}@{fixed}",
+            f"npm ls {artifact}",
+        ]
+    if ecosystem == "python":
+        return [
+            f'pip install --upgrade "{artifact}=={fixed}"',
+            f"python -m pip show {artifact}",
+        ]
+    if ecosystem == "go":
+        module = group or artifact
+        return [
+            f"go get {module}@{fixed}",
+            "go mod tidy",
+            f"go list -m {module}",
+        ]
+    if ecosystem == "rust":
+        ver = f"{artifact}@{installed}" if installed else artifact
+        return [
+            f"cargo update -p {ver} --precise {fixed}",
+            f"cargo tree -i {artifact}",
+        ]
+    if ecosystem == "ruby":
+        return [
+            f"bundle update {artifact}",
+            f"bundle list | grep {artifact}",
+        ]
+    if ecosystem == "php":
+        coord = f"{group}/{artifact}" if group else artifact
+        return [
+            f"composer require {coord}:{fixed}",
+            f"composer show {artifact}",
+        ]
+    return []
+
+
+def _ecosystem_file_change(
+    ecosystem: str,
+    artifact: str,
+    group: str | None,
+    installed: str | None,
+    fixed: str | None,
+    manifest: str | None,
+) -> dict | None:
+    """Concrete before/after manifest edit for the affected dependency."""
+    if not fixed or not installed or not manifest:
+        return None
+    if ecosystem == "java":
+        return {
+            "manifest": manifest,
+            "before": f"<version>{installed}</version>",
+            "after": f"<version>{fixed}</version>",
+        }
+    if ecosystem == "npm":
+        pkg = f"@{group}/{artifact}" if group else artifact
+        return {"manifest": manifest, "before": f'"{pkg}": "{installed}"', "after": f'"{pkg}": "{fixed}"'}
+    if ecosystem == "python":
+        return {"manifest": manifest, "before": f"{artifact}=={installed}", "after": f"{artifact}=={fixed}"}
+    if ecosystem == "go":
+        module = group or artifact
+        return {"manifest": manifest, "before": f"{module} {installed}", "after": f"{module} {fixed}"}
+    if ecosystem == "rust":
+        return {"manifest": manifest, "before": f'{artifact} = "{installed}"', "after": f'{artifact} = "{fixed}"'}
+    if ecosystem == "ruby":
+        return {
+            "manifest": manifest,
+            "before": f'gem "{artifact}", "{installed}"',
+            "after": f'gem "{artifact}", "{fixed}"',
+        }
+    if ecosystem == "php":
+        coord = f"{group}/{artifact}" if group else artifact
+        return {"manifest": manifest, "before": f'"{coord}": "*"', "after": f'"{coord}": "{fixed}"'}
+    return None
+
+
+def _ecosystem_verification(ecosystem: str, artifact: str, group: str | None, cve_id: str) -> list[str]:
+    if ecosystem == "java":
+        coord = f"{group}:{artifact}" if group else artifact
+        steps = [f"mvn dependency:tree -Dincludes={coord}"]
+    elif ecosystem == "npm":
+        steps = [f"npm ls {artifact}"]
+    elif ecosystem == "python":
+        steps = [f"python -m pip show {artifact}"]
+    elif ecosystem == "go":
+        steps = [f"go list -m {group or artifact}"]
+    elif ecosystem == "rust":
+        steps = [f"cargo tree -i {artifact}"]
+    elif ecosystem == "ruby":
+        steps = [f"bundle list | grep {artifact}"]
+    elif ecosystem == "php":
+        steps = [f"composer show {artifact}"]
+    else:
+        steps = []
+    steps.append(f"Rerun 'depwolf scan .' and confirm {cve_id} no longer appears in findings.")
+    return steps
+
+
+def _transitive_explanation(context: dict, artifact: str) -> str | None:
+    if context.get("direct") is not False:
+        return None
+    path = context.get("path")
+    chain = " > ".join(path) if path else "an upstream dependency"
+    return (
+        f"{artifact} is a transitive dependency (pulled in via {chain}). "
+        "Upgrade the direct dependency that introduces it, or add an explicit "
+        "override/pin for the fixed version in your manifest."
+    )
+
+
+def _compatibility_warning(installed: str | None, fixed: str | None) -> str | None:
+    if not installed or not fixed:
+        return None
+    a = re.match(r"\d+", installed)
+    b = re.match(r"\d+", fixed)
+    if a and b and a.group(0) != b.group(0):
+        return (
+            f"Upgrade crosses a major-version boundary ({installed} -> {fixed}). "
+            "Review the upstream release notes / migration guide for breaking changes "
+            "and test in staging before production rollout."
+        )
+    return None
+
+
 def _executive_summary(cve_id, cvss, severity, vendor, product, is_kev, fixed_version=None):
     parts = [
         f"{cve_id} ({vendor} {product}) — CVSS {cvss} ({severity}).",
@@ -270,14 +502,64 @@ def _root_cause(desc, vendor, product):
     return f"The root cause in {vendor} {product} is: {snippet}"
 
 
-def generate_remediation(cve_id: str, store: CVERepository | None = None) -> dict:
-    """Generate remediation from cpe_index.db facts. Returns {} if CVE not in index."""
+def generate_remediation(
+    cve_id: str,
+    store: CVERepository | None = None,
+    context: dict | None = None,
+) -> dict:
+    """Generate remediation from cpe_index.db facts, ecosystem-aware when context is given.
+
+    ``context`` may carry dependency metadata from the scan pipeline:
+    installed_version, ecosystem, name, group, artifact, manifest, direct, path.
+    Deterministic DB facts are always authoritative; the AI (if enabled) only
+    writes narrative text and never invents versions/coordinates/CVSS.
+    """
     facts = _db_lookup(cve_id, store=store)
     if not facts:
         return {"cve_id": cve_id, "found": False}
+    ctx = context or {}
     is_kev = facts["kev"]
     fixed = facts["fixed_version"]
-    cmds = _patch_commands(facts["product"], facts["vendor"], fixed, cve_id)
+    installed = ctx.get("installed_version")
+    ecosystem = ctx.get("ecosystem")
+    artifact = ctx.get("artifact") or facts["product"]
+    group = ctx.get("group")
+    manifest = ctx.get("manifest")
+
+    applicable = _installed_applicability(installed, facts["ranges"])
+
+    if ecosystem and ecosystem in _ECOSYSTEM_LABELS:
+        cmds = _ecosystem_patch(ecosystem, artifact, group, installed, fixed, cve_id)
+        verification_steps = _ecosystem_verification(ecosystem, artifact, group, cve_id)
+        file_change = _ecosystem_file_change(ecosystem, artifact, group, installed, fixed, manifest)
+        transitive = _transitive_explanation(ctx, artifact)
+        compat = _compatibility_warning(installed, fixed)
+    else:
+        cmds = _patch_commands(facts["product"], facts["vendor"], fixed, cve_id)
+        verification_steps = [
+            "# Check the installed version:",
+            "#   - For container images: trivy image <image:tag> | grep -i " + cve_id.lower(),
+            "#   - For hosts: see your package manager's version output",
+            f"# Rerun 'depwolf scan .' and confirm {cve_id} no longer appears in findings.",
+        ]
+        file_change = None
+        transitive = None
+        compat = None
+
+    if applicable is False:
+        ranges_str = ", ".join(facts["affected_versions"]) or "all versions"
+        recommended = (
+            f"Installed version {installed} is outside the affected ranges "
+            f"({ranges_str}) — no upgrade is required for {cve_id}."
+        )
+    elif fixed:
+        recommended = f"Upgrade {artifact} to {fixed} or later."
+    else:
+        recommended = (
+            f"No fixed version published for {cve_id} yet — apply the vendor "
+            "advisory mitigation and monitor for a patched release."
+        )
+
     summary = _executive_summary(
         cve_id,
         facts["cvss_score"],
@@ -287,13 +569,19 @@ def generate_remediation(cve_id: str, store: CVERepository | None = None) -> dic
         is_kev,
         fixed,
     )
-    ai = _ai_narrative(cve_id, facts)
+    ai = _ai_narrative(cve_id, facts, ctx)
+    verification = (ai or {}).get("verification") or "; ".join(verification_steps)
+
     return {
         "cve_id": cve_id,
         "found": True,
         "description": facts["description"],
         "vendor": facts["vendor"],
         "product": facts["product"],
+        "package": artifact,
+        "ecosystem": ecosystem,
+        "installed_version": installed,
+        "applicable": applicable,
         "cvss_score": facts["cvss_score"],
         "cvss_severity": facts["cvss_severity"],
         "epss_score": facts["epss_score"],
@@ -301,26 +589,35 @@ def generate_remediation(cve_id: str, store: CVERepository | None = None) -> dic
         "risk_score": facts["risk_score"],
         "severity": facts["severity"],
         "patch_priority": facts["patch_priority"],
+        "patch_sla_hours": facts["patch_sla_hours"],
+        "minimum_safe_version": fixed,
         "fixed_version": fixed,
         "affected_versions": facts["affected_versions"],
+        "recommended_action": recommended,
+        "direct": ctx.get("direct"),
+        "dependency_path": list(ctx["path"]) if ctx.get("path") else None,
+        "manifest": manifest,
         "patch_commands": cmds,
+        "file_change": file_change,
+        "compatibility_warning": compat,
+        "transitive_explanation": transitive,
         "step_by_step_fix": (ai or {}).get("step_by_step_fix")
         or _step_by_step(cve_id, is_kev, facts["cvss_score"], facts["vendor"], facts["product"], fixed),
         "executive_summary": (ai or {}).get("executive_summary") or summary,
         "root_cause": (ai or {}).get("root_cause")
         or _root_cause(facts["description"], facts["vendor"], facts["product"]),
-        "verification": (ai or {}).get("verification"),
+        "verification": verification,
         "remediation_source": "ai" if ai else "template",
     }
 
 
-def _ai_narrative(cve_id: str, facts: dict) -> dict | None:
+def _ai_narrative(cve_id: str, facts: dict, context: dict | None = None) -> dict | None:
     """Full AI remediation narrative (JSON) over DB-verified facts.
 
     Returns a dict with executive_summary, root_cause, step_by_step_fix, and
     verification — or None when no API key is set or the model output is not
-    usable. Fixed version / CVSS / patch commands are never sourced here; they
-    stay DB-grounded so the model cannot invent them.
+    usable. Fixed version / CVSS / package coordinates are never sourced here;
+    they stay DB-grounded so the model cannot invent them.
     """
     key = os.environ.get("AVIP_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     model = os.environ.get("AVIP_AI_MODEL") or "gpt-4o-mini"
@@ -329,6 +626,14 @@ def _ai_narrative(cve_id: str, facts: dict) -> dict | None:
     import json as _json
     import urllib.request
 
+    ctx = context or {}
+    ecosystem = ctx.get("ecosystem")
+    installed = ctx.get("installed_version")
+    manifest = ctx.get("manifest")
+    direct = ctx.get("direct")
+    dep_path = ctx.get("path")
+    path_str = " > ".join(dep_path) if dep_path else None
+
     prompt = (
         "You are a senior application security remediation engineer. Write the "
         "remediation for the vulnerability described below. Respond with a JSON "
@@ -336,13 +641,25 @@ def _ai_narrative(cve_id: str, facts: dict) -> dict | None:
         'sentences for a security engineer), "root_cause" (string, what causes '
         'it in the component), "step_by_step_fix" (list of strings, concrete '
         'ordered remediation steps), "verification" (string, how to confirm '
-        "the fix worked). Be practical and specific to this finding. Never "
-        "invent versions, CVSS scores, or fixed versions — use only the facts "
-        "provided. Facts (verified): cve_id={cve_id} product={product} "
+        "the fix worked). Be practical and specific to this finding. Answer "
+        "these questions, using ONLY the verified facts provided and no invented "
+        "versions, CVSS scores, or fixed versions: "
+        "(1) Which exact component/version is vulnerable and how does it enter the build? "
+        "(2) What is the root cause? "
+        "(3) What is the minimum safe version to upgrade to? "
+        "(4) What exact manifest change or command resolves it in this ecosystem? "
+        "(5) Is the dependency direct or transitive, and what must change in each case? "
+        "(6) Are there compatibility or migration caveats? "
+        "(7) How do you verify the fix? "
+        "(8) Is this CVE in CISA KEV and is there active exploitation evidence? "
+        "(9) What residual risk remains if remediation is deferred? "
+        "Verified facts: cve_id={cve_id} product={product} "
         "vendor={vendor} cvss={cvss} severity={severity} kev={kev} "
         "risk={risk} patch_priority={priority} "
         "fixed_version={fixed} affected_versions={versions} "
-        "description={desc}."
+        "description={desc}. Project context: ecosystem={ecosystem} "
+        "installed_version={installed} manifest={manifest} direct={direct} "
+        "dependency_path={path}."
     ).format(
         cve_id=cve_id,
         product=facts["product"],
@@ -355,6 +672,11 @@ def _ai_narrative(cve_id: str, facts: dict) -> dict | None:
         fixed=facts["fixed_version"],
         versions=facts["affected_versions"],
         desc=(facts["description"] or "")[:1500],
+        ecosystem=ecosystem or "unknown",
+        installed=installed or "unknown",
+        manifest=manifest or "unknown",
+        direct=("yes" if direct else "no") if direct is not None else "unknown",
+        path=path_str or "unknown",
     )
     body = _json.dumps(
         {

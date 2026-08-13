@@ -157,6 +157,74 @@ def test_collect_project_candidates(tmp_path, index_store):
     assert "log4j-core 2.14.1" in result["stack"]
 
 
+def test_pom_group_artifact_ecosystem(tmp_path):
+    p = _write(tmp_path, "pom.xml", POM)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    dep = by_name["org.apache.logging.log4j:log4j-core"]
+    assert dep["group"] == "org.apache.logging.log4j"
+    assert dep["artifact"] == "log4j-core"
+    assert dep["ecosystem"] == "java"
+    assert dep["direct"] is True
+
+
+def test_go_mod_direct_and_indirect(tmp_path):
+    p = _write(tmp_path, "go.mod", GO)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    assert by_name["gin"]["direct"] is True
+    assert by_name["gin"]["group"] == "github.com/gin-gonic/gin"
+    assert by_name["net"]["direct"] is False
+
+
+def test_npm_scoped_group_and_artifact(tmp_path):
+    pkg = json.dumps({"name": "demo", "dependencies": {"@angular/core": "12.0.0"}})
+    p = _write(tmp_path, "package.json", pkg)
+    deps = parse_manifests([p])
+    dep = deps[0]
+    assert dep["group"] == "angular"
+    assert dep["artifact"] == "core"
+    assert dep["direct"] is True
+
+
+def test_package_lock_nested_is_transitive(tmp_path):
+    lock = json.dumps(
+        {
+            "name": "demo",
+            "dependencies": {
+                "express": {
+                    "version": "4.17.1",
+                    "dependencies": {"body-parser": {"version": "1.19.0"}},
+                }
+            },
+        }
+    )
+    p = _write(tmp_path, "package-lock.json", lock)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    assert by_name["express"]["direct"] is True
+    assert by_name["body-parser"]["direct"] is False
+    assert by_name["body-parser"]["path"] == ("express", "body-parser")
+
+
+def test_cargo_lock_transitive_path(tmp_path):
+    cargo = """[[package]]
+name = "root"
+version = "1.0.0"
+dependencies = ["serde"]
+
+[[package]]
+name = "serde"
+version = "1.0.130"
+"""
+    p = _write(tmp_path, "Cargo.lock", cargo)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    assert by_name["root"]["direct"] is True
+    assert by_name["serde"]["direct"] is False
+    assert by_name["serde"]["path"] == ("root", "serde")
+
+
 def test_scan_project_finds_log4j_in_memory(tmp_path, memory_index_store):
     _write(tmp_path, "pom.xml", POM)
     result = scan_project(tmp_path, store=memory_index_store)

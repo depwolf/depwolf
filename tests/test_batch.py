@@ -1,6 +1,6 @@
 """Phase 6 tests: one-pass batch matching isolates DB connections (ADR-017)."""
 
-from depwolf.application.matcher import match_plan, prioritize_cves
+from depwolf.application.matcher import match_plan, match_plan_full, prioritize_cves
 
 
 def test_match_plan_resolves_log4j_in_two_calls(memory_index_store):
@@ -48,3 +48,29 @@ def test_backfill_adds_non_stack_cves(memory_index_store):
     )
     found = {f["cve_id"] for f in result["prioritized"]}
     assert found == {"CVE-2021-44228", "CVE-2021-45046"}
+
+
+def test_match_plan_full_returns_exact_confidence(memory_index_store):
+    plan, conf = match_plan_full("log4j 2.14.0", store=memory_index_store)
+    assert "CVE-2021-44228" in plan
+    assert conf.get("CVE-2021-44228") == "exact"
+
+
+def test_prioritized_entry_has_match_confidence(memory_index_store):
+    result = prioritize_cves(["CVE-2021-44228"], "log4j 2.14.0", store=memory_index_store)
+    entry = result["prioritized"][0]
+    assert entry["match_confidence"] == "exact"
+
+
+def test_prioritize_reporting_semantics(memory_index_store):
+    result = prioritize_cves(
+        ["CVE-2021-44228", "CVE-9999-0000"],
+        "log4j 2.14.0",
+        store=memory_index_store,
+    )
+    assert result["actionable"] == 1
+    assert result["found"] == 1
+    assert result["not_applicable"] == 1  # CVE-9999-0000 -> not_found
+    assert result["risk_suppressed"] == 0
+    assert result["false_positive_rate"] == result["not_applicable_rate"]
+    assert result["reduction_rate"] == 50.0

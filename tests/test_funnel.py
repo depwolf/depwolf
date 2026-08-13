@@ -68,6 +68,22 @@ def test_not_in_stack_filter_sets_affected(index_store):
     assert ctx.matched_row is not None
 
 
+def test_not_in_stack_version_outside_range(index_store):
+    ctx = _ctx(_store(index_store), "CVE-2021-44228", assets=[{"product": "log4j", "version": "3.0"}])
+    NotInStackFilter().apply(ctx)
+    assert ctx.reason == "not_in_stack"
+    assert "outside the vulnerable range" in ctx.detail
+    assert ">= 2.0 and < 2.15.0" in ctx.detail
+    assert ctx.risk_score is not None and ctx.severity is not None
+
+
+def test_not_in_stack_product_mismatch(index_store):
+    ctx = _ctx(_store(index_store), "CVE-2021-44228", assets=[{"product": "someotherlib", "version": "1.0"}])
+    NotInStackFilter().apply(ctx)
+    assert ctx.reason == "not_in_stack"
+    assert "no matching dependency exists" in ctx.detail
+
+
 def test_low_risk_filter_drops(index_store):
     ctx = FilterContext(
         cve_id="CVE-X",
@@ -82,6 +98,20 @@ def test_low_risk_filter_drops(index_store):
     LowRiskFilter().apply(ctx)
     assert ctx.reason == "low_risk"
     assert ctx.risk_score is not None and ctx.risk_score < 35
+
+
+def test_low_risk_detail_includes_score_and_threshold(index_store):
+    ctx = FilterContext(
+        cve_id="CVE-X",
+        rows=[_row(cvss=1.0, epss=0.0, kev=False)],
+        assets=[],
+        os_filter=None,
+        ignored=set(),
+    )
+    LowRiskFilter().apply(ctx)
+    assert ctx.reason == "low_risk"
+    assert "below the risk threshold 35" in ctx.detail
+    assert str(ctx.risk_score) in ctx.detail
 
 
 def test_funnel_stops_at_first_drop(index_store):

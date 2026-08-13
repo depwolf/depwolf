@@ -12,7 +12,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from depwolf.domain.match import _PRODUCT_ALIASES, _compact, fuzzy_product_match
+from depwolf.domain.match import _PRODUCT_ALIASES, _compact, fuzzy_product_match, product_match_confidence
 from depwolf.domain.model import ProductMatch, VulnRange
 from depwolf.domain.versions import _normalize
 from depwolf.infrastructure.cpe_index import DB_PATH, _ensure_schema
@@ -111,7 +111,7 @@ class SqliteIndexStore:
             ).fetchall()
             for r in rows:
                 if _compact(r["product"]) == _compact(norm):
-                    return [ProductMatch(vendor=r["vendor"], product=r["product"])]
+                    return [ProductMatch(vendor=r["vendor"], product=r["product"], confidence="exact")]
             if rows:
                 candidates.extend(rows)
                 break
@@ -122,7 +122,7 @@ class SqliteIndexStore:
                 (alias, limit),
             ).fetchall()
             if rows:
-                return [ProductMatch(vendor=rows[0]["vendor"], product=rows[0]["product"])]
+                return [ProductMatch(vendor=rows[0]["vendor"], product=rows[0]["product"], confidence="alias")]
         seen: set[tuple[str, str]] = set()
         out: list[ProductMatch] = []
         for r in candidates:
@@ -131,7 +131,13 @@ class SqliteIndexStore:
             key = (r["vendor"], r["product"])
             if key not in seen:
                 seen.add(key)
-                out.append(ProductMatch(vendor=r["vendor"], product=r["product"]))
+                out.append(
+                    ProductMatch(
+                        vendor=r["vendor"],
+                        product=r["product"],
+                        confidence=product_match_confidence(norm, r["product"]) or "fuzzy",
+                    )
+                )
         return out
 
     def cves_for_products(self, products: list[tuple[str, str]]) -> dict[tuple[str, str], list[VulnRange]]:

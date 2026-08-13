@@ -1,4 +1,4 @@
-from depwolf.application.remediation import _ai_narrative
+from depwolf.application.remediation import _ai_narrative, verify_fix
 from depwolf.remediation import generate_remediation
 
 FAKE_NARRATIVE = {
@@ -12,7 +12,7 @@ FAKE_NARRATIVE = {
 def test_ai_remediation_narrative_used(monkeypatch, index_store):
     monkeypatch.setattr(
         "depwolf.application.remediation._ai_narrative",
-        lambda cve_id, facts: dict(FAKE_NARRATIVE),
+        lambda cve_id, facts, context: dict(FAKE_NARRATIVE),
     )
     rem = generate_remediation("CVE-2021-44228", store=index_store)
     assert rem["remediation_source"] == "ai"
@@ -36,7 +36,7 @@ def test_ai_remediation_falls_back_to_templates(index_store):
 def test_ai_remediation_malformed_output_falls_back(monkeypatch, index_store):
     monkeypatch.setattr(
         "depwolf.application.remediation._ai_narrative",
-        lambda cve_id, facts: None,
+        lambda cve_id, facts, context: None,
     )
     rem = generate_remediation("CVE-2021-44228", store=index_store)
     assert rem["remediation_source"] == "template"
@@ -138,3 +138,104 @@ def test_ai_narrative_rejects_missing_keys(monkeypatch):
         _fake_urlopen(payload),
     )
     assert _ai_narrative("CVE-2021-44228", dict(_FACTS)) is None
+
+
+# ---- verification (FIXED / STILL VULNERABLE / UNABLE TO VERIFY) ----------
+
+
+def test_verify_fix_statuses(index_store):
+    # CVE-2021-44228 affects 2.0 <= v < 2.15.0
+    assert verify_fix("CVE-2021-44228", "2.14.0", store=index_store) == "still_vulnerable"
+    assert verify_fix("CVE-2021-44228", "2.15.0", store=index_store) == "fixed"
+    assert verify_fix("CVE-2021-44228", "1.9", store=index_store) == "fixed"  # below range
+    assert verify_fix("CVE-2021-44228", "3.0", store=index_store) == "fixed"  # above range
+
+
+def test_verify_fix_unable_never_maps_to_fixed(index_store):
+    assert verify_fix("CVE-2021-44228", None, store=index_store) == "unable_to_verify"
+    assert verify_fix("CVE-9999-0000", "1.0", store=index_store) == "unable_to_verify"
+    assert verify_fix("", "1.0", store=index_store) == "unable_to_verify"
+
+
+# ---- ecosystem-aware remediation -----------------------------------------
+
+
+def test_remediation_maven_ecosystem(index_store):
+    rem = generate_remediation(
+        "CVE-2021-44228",
+        store=index_store,
+        context={
+            "installed_version": "2.14.1",
+            "ecosystem": "java",
+            "group": "org.apache.logging.log4j",
+            "artifact": "log4j-core",
+            "manifest": "pom.xml",
+            "direct": True,
+        },
+    )
+    assert rem["ecosystem"] == "java"
+    assert rem["installed_version"] == "2.14.1"
+    assert rem["applicable"] is True
+    assert rem["minimum_safe_version"] == "2.15.0"
+    assert rem["fixed_version"] == "2.15.0"
+    assert any("mvn dependency:tree" in c for c in rem["patch_commands"])
+    assert rem["file_change"]["manifest"] == "pom.xml"
+    assert rem["file_change"]["after"] == "<version>2.15.0</version>"
+    assert rem["verification"], "template verification is non-null"
+    assert rem["remediation_source"] == "template"
+
+
+def test_remediation_npm_commands(index_store):
+    rem = generate_remediation(
+        "CVE-2021-44228",
+        store=index_store,
+        context={
+            "installed_version": "2.14.1",
+            "ecosystem": "npm",
+            "artifact": "log4j-core",
+            "manifest": "package.json",
+            "direct": True,
+        },
+    )
+    assert any(c.startswith("npm install log4j-core@2.15.0") for c in rem["patch_commands"])
+    assert rem["file_change"]["after"] == '"log4j-core": "2.15.0"'
+
+
+def test_remediation_transitive_explanation(index_store):
+    rem = generate_remediation(
+        "CVE-2021-44228",
+        store=index_store,
+        context={
+            "installed_version": "2.14.1",
+            "ecosystem": "java",
+            "group": "org.apache.logging.log4j",
+            "artifact": "log4j-core",
+            "manifest": "pom.xml",
+            "direct": False,
+            "path": ("app", "starter", "log4j-core"),
+        },
+    )
+    assert "transitive" in rem["transitive_explanation"].lower()
+    assert "app > starter > log4j-core" in rem["transitive_explanation"]
+    assert rem["dependency_path"] == ["app", "starter", "log4j-core"]
+
+
+def test_remediation_version_not_affected(index_store):
+    rem = generate_remediation(
+        "CVE-2021-44228",
+        store=index_store,
+        context={"installed_version": "1.0", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
+    )
+    assert rem["applicable"] is False
+    assert "outside the affected ranges" in rem["recommended_action"]
+
+
+def test_remediation_compatibility_warning(index_store):
+    rem = generate_remediation(
+        "CVE-2021-44228",
+        store=index_store,
+        context={"installed_version": "1.9", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
+    )
+    assert rem["applicable"] is False
+    # 1.x -> 2.15.0 is a major-version jump, so a warning is emitted regardless
+    assert rem["compatibility_warning"] is not None

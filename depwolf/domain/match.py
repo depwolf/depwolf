@@ -31,22 +31,46 @@ def _compact(s: str) -> str:
     return re.sub(r"[^a-z0-9.+]", "", s.lower())
 
 
-def fuzzy_product_match(norm: str, row_product: str) -> bool:
-    """Fuzzy match a normalized stack product against a CPE product name."""
+_CONF_ORDER = {"exact": 4, "alias": 3, "canonical": 3, "fuzzy": 2, "heuristic": 1}
+
+MATCH_CONFIDENCE_LEVELS = ("exact", "alias", "canonical", "fuzzy", "heuristic")
+
+
+def product_match_confidence(norm: str, row_product: str) -> str | None:
+    """Classify how a stack product matches an index product.
+
+    Returns exact / alias / canonical / fuzzy, or None when they do not match.
+    exact and alias are high-confidence; canonical (packaging suffix) is
+    high-confidence; a bare digit-prefix match is only fuzzy (medium).
+    """
     a = _compact(norm)
     b = _compact(row_product)
     if not a or not b:
-        return False
+        return None
     if a == b:
-        return True
+        return "exact"
     if _PRODUCT_ALIASES.get(a) == b or _PRODUCT_ALIASES.get(b) == a:
-        return True
+        return "alias"
     short, long = (a, b) if len(a) <= len(b) else (b, a)
     if long.startswith(short):
         rest = long[len(short) :]
-        if rest.isdigit() or rest in _PACKAGING_SUFFIXES:
-            return True
-    return False
+        if rest in _PACKAGING_SUFFIXES:
+            return "canonical"
+        if rest.isdigit():
+            return "fuzzy"
+    return None
+
+
+def better_confidence(a: str | None, b: str) -> str:
+    """Return the higher of two match-confidence levels."""
+    if a is None:
+        return b
+    return a if _CONF_ORDER.get(a, 0) >= _CONF_ORDER.get(b, 0) else b
+
+
+def fuzzy_product_match(norm: str, row_product: str) -> bool:
+    """Fuzzy match a normalized stack product against a CPE product name."""
+    return product_match_confidence(norm, row_product) is not None
 
 
 def asset_matches(asset: Asset, row: VulnRange) -> bool:

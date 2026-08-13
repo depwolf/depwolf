@@ -37,6 +37,7 @@ class FilterContext:
     severity: str | None = None
     matched_row: VulnRange | None = None
     affected_assets: list[str] = field(default_factory=list)
+    match_confidence: str | None = None
 
     @property
     def dropped(self) -> bool:

@@ -23,6 +23,10 @@ class Dependency:
     version: str | None
     ecosystem: str
     source: str  # manifest path or scan target
+    group: str | None = None  # maven groupId / npm scope / go module namespace
+    manifest: str | None = None  # exact manifest path
+    direct: bool | None = None  # True=direct, False=transitive, None=unknown
+    path: tuple[str, ...] | None = None  # dependency path (top-down), when known
 
 
 @dataclass(frozen=True)
@@ -201,10 +205,15 @@ class Asset:
 
 @dataclass(frozen=True)
 class ProductMatch:
-    """A resolved (vendor, product) pair for a stack product."""
+    """A resolved (vendor, product) pair for a stack product.
+
+    ``confidence`` reflects how the stack name was matched to the index product:
+    exact / alias / canonical / fuzzy / heuristic.
+    """
 
     vendor: str
     product: str
+    confidence: str = "fuzzy"
 
 
 @dataclass(frozen=True)
