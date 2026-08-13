@@ -5,6 +5,27 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6.1] - 2026-08-13
+
+### Added
+- Version provenance on every scanned dependency: `version_confidence`
+  (`EXACT`/`UNKNOWN`) and `version_source` (`manifest`/`lockfile`/`unavailable`)
+  are emitted by the manifest parsers, carried through findings, and shown in
+  remediation context.
+- `dependency_type` (`DIRECT`/`TRANSITIVE`/`UNKNOWN`) and `dependency_path` are
+  now resolved for lockfile-based manifests (package-lock v1/v2, Cargo.lock) and
+  surfaced in the remediation overview table (new `Type` column) and cards.
+- Maven `<properties>` placeholders (`${log4j.version}`) are resolved from the
+  pom's `<properties>` block; unresolved placeholders stay honestly `UNKNOWN`.
+
+### Changed
+- `applicable` in remediation output is now a tri-state `YES`/`NO`/`UNKNOWN`
+  (was `true`/`false`/`null`). `UNKNOWN` always carries an explicit
+  `applicability_note` explaining why (unresolved version or no authoritative
+  affected range in the local index).
+- Remediation narratives (executive summary, root cause, step-by-step) now use
+  the package name instead of "inventory all systems running <vendor> <product>".
+
 ## [0.1.6] - 2026-08-13
 
 ### Added
