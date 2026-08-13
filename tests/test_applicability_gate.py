@@ -257,3 +257,142 @@ def test_versionless_duplicate_does_not_shadow_resolved_version(jquery_store):
     result_ok = prioritize_cves(["CVE-2020-11023"], "jquery 3.4.1\njquery", store=jquery_store)
     entry = next(f for f in result_ok["prioritized"] if f["cve_id"] == "CVE-2020-11023")
     assert entry["installed_version"] == "3.4.1"
+
+
+# --- Version flow for real-world package names (Maven / scoped npm / Go) ---
+#
+# trivy and the pom parser emit Maven deps as "group:artifact version". If the
+# stack parser cannot split them, the installed version is lost and the asset
+# degrades to UNKNOWN, so a WebGoat-style Java report would drop every finding.
+
+
+def test_parse_stack_extracts_java_scoped_go_versions():
+    from depwolf.application.matcher import parse_stack
+
+    assert parse_stack("org.apache.logging.log4j:log4j-core 2.14.0") == [
+        {"product": "org.apache.logging.log4j:log4j-core", "version": "2.14.0"}
+    ]
+    assert parse_stack("@babel/core 7.24.0") == [{"product": "@babel/core", "version": "7.24.0"}]
+    assert parse_stack("github.com/gin-gonic/gin v1.9.0") == [
+        {"product": "github.com/gin-gonic/gin", "version": "v1.9.0"}
+    ]
+    assert parse_stack("jquery 4.0.0") == [{"product": "jquery", "version": "4.0.0"}]
+
+
+def test_assets_reduce_maven_coordinates_keeping_version():
+    from depwolf.application.matcher import _assets
+
+    assets = _assets("org.apache.logging.log4j:log4j-core 2.14.0")
+    assert [(a.product, a.version) for a in assets] == [("log4j-core", "2.14.0")]
+
+
+def test_findings_stack_keeps_java_version():
+    from depwolf.application.ingest import findings_stack
+    from depwolf.domain.model import CVEReference
+
+    refs = [
+        CVEReference(
+            cve_id="CVE-2021-44228",
+            pkg="org.apache.logging.log4j:log4j-core",
+            installed_version="2.14.0",
+            source="trivy",
+        )
+    ]
+    assert findings_stack(refs) == "org.apache.logging.log4j:log4j-core 2.14.0"
+
+
+def test_trivy_java_finding_flows_version_into_funnel():
+    from depwolf.application.adapters import TrivyAdapter
+
+    report = {
+        "Results": [
+            {
+                "Target": "pom.xml",
+                "Class": "lang-pkgs",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": "CVE-2021-44228",
+                        "PkgName": "org.apache.logging.log4j:log4j-core",
+                        "InstalledVersion": "2.14.0",
+                        "Severity": "CRITICAL",
+                    }
+                ],
+            }
+        ]
+    }
+    refs = TrivyAdapter().extract(report)
+    from depwolf.application.ingest import findings_stack
+
+    assert findings_stack(refs) == "org.apache.logging.log4j:log4j-core 2.14.0"
+
+    result = prioritize_cves(
+        [r.cve_id for r in refs],
+        findings_stack(refs),
+        store=LOG4J_STORE(),
+    )
+    entry = next(f for f in result["prioritized"] if f["cve_id"] == "CVE-2021-44228")
+    assert entry["installed_version"] == "2.14.0"
+    assert entry["match_confidence"] == "exact"
+
+
+def _log4j_store():
+    store = SqliteIndexStore(memory=True)
+    # CVE-2021-44228: >= 2.0-beta9 and < 2.15.0, or >= 2.16.0 and < 2.17.1.
+    rows = [
+        (
+            "apache",
+            "log4j-core",
+            "2.0-beta9",
+            None,
+            None,
+            "2.15.0",
+            "CVE-2021-44228",
+            "Apache Log4j2 2.0-beta9 through 2.15.0 remote code execution",
+            10.0,
+            "CRITICAL",
+            0.97,
+            1,
+            "2021-12-10T00:00:00.000",
+        ),
+        (
+            "apache",
+            "log4j-core",
+            "2.16.0",
+            None,
+            None,
+            "2.17.1",
+            "CVE-2021-44228",
+            "Apache Log4j2 2.16.0 through 2.16.1 remote code execution",
+            10.0,
+            "CRITICAL",
+            0.97,
+            1,
+            "2021-12-10T00:00:00.000",
+        ),
+    ]
+    conn = store.open()
+    conn.executemany(
+        f"INSERT INTO cpe_index ({_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    store.close(conn)
+    return store
+
+
+LOG4J_STORE = _log4j_store
+
+
+def test_java_version_range_gate_yes_and_no():
+    store = LOG4J_STORE()
+
+    yes = prioritize_cves(["CVE-2021-44228"], "org.apache.logging.log4j:log4j-core 2.14.0", store=store)
+    entry = next(f for f in yes["prioritized"] if f["cve_id"] == "CVE-2021-44228")
+    assert entry["installed_version"] == "2.14.0"
+
+    no = prioritize_cves(["CVE-2021-44228"], "org.apache.logging.log4j:log4j-core 2.17.1", store=store)
+    assert "CVE-2021-44228" not in {f["cve_id"] for f in no["prioritized"]}
+    assert any(d["reason"] == "not_in_stack" for d in no["filtered_details"])
+
+    yes2 = prioritize_cves(["CVE-2021-44228"], "org.apache.logging.log4j:log4j-core 2.16.0", store=store)
+    assert "CVE-2021-44228" in {f["cve_id"] for f in yes2["prioritized"]}

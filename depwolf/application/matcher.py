@@ -43,8 +43,25 @@ def _repo(store: CVERepository | None) -> CVERepository:
 # ---- stack parsing -------------------------------------------------------
 
 
+def _cpe_product(name: str) -> str:
+    """Reduce a package name to its CPE product form.
+
+    Maven coordinates are emitted as ``groupId:artifactId`` by the pom parser
+    and by trivy; NVD indexes them by artifactId, so drop the group. Other
+    name shapes are passed through untouched.
+    """
+    if ":" in name:
+        return name.rsplit(":", 1)[-1]
+    return name
+
+
 def parse_stack(text: str) -> list[dict]:
-    """Parse a 'product version' stack text into asset dicts."""
+    """Parse a 'product version' stack text into asset dicts.
+
+    Accepts ``group:artifact version`` (Maven), ``@scope/pkg version`` (scoped
+    npm), and ``path version`` (Go modules), so installed versions survive the
+    trip from the report into the funnel instead of degrading to UNKNOWN.
+    """
     items = []
     for part in re.split(r"[\n,]+", text or ""):
         line = part.strip()
@@ -52,7 +69,11 @@ def parse_stack(text: str) -> list[dict]:
             continue
         if re.match(r"^os\s*[:=]\s*\w+$", line, re.IGNORECASE):
             continue
-        m = re.match(r"^([a-zA-Z0-9._+-]+(?:\s+[a-zA-Z0-9._+-]+)*)\s+([0-9][0-9a-zA-Z._+:-]*)$", line)
+        m = re.match(
+            r"^([a-zA-Z0-9._+\-:@/]+(?:\s+[a-zA-Z0-9._+\-:@/]+)*)"
+            r"\s+(v?[0-9][0-9a-zA-Z._+:-]*)$",
+            line,
+        )
         if m:
             items.append({"product": m.group(1).strip(), "version": m.group(2).strip()})
         else:
@@ -70,7 +91,7 @@ def _assets(stack_text: str | None) -> list[Asset]:
     """
     by_product: dict[str, Asset] = {}
     for item in parse_stack(stack_text or ""):
-        product = item["product"]
+        product = _cpe_product(item["product"])
         version = item["version"]
         existing = by_product.get(product)
         if existing is None or (version and not existing.version):
