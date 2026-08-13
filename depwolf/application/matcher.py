@@ -196,6 +196,9 @@ def _build_entry(
             risk = rk
             best = r
     row = ctx.matched_row or best
+    matched_assets = (
+        [a for a in ctx.assets if a.product in ctx.affected_assets] if ctx.affected_assets else list(ctx.assets)
+    )
     verdict = apply_policy(
         policy,
         cve_id=ctx.cve_id,
@@ -214,14 +217,14 @@ def _build_entry(
         product=row.product,
         matched_ranges=list(ctx.rows),
         fixed_version=ref.fixed_version,
-        affected_assets=[Asset(a.product, a.version) for a in ctx.assets],
+        affected_assets=[Asset(a.product, a.version) for a in matched_assets],
         description=row.description or "",
     )
     finding = Finding(
         cve=ref,
         matched=True,
         affected_assets=[
-            Dependency(name=a.product, version=a.version, ecosystem="unknown", source="stack") for a in ctx.assets
+            Dependency(name=a.product, version=a.version, ecosystem="unknown", source="stack") for a in matched_assets
         ],
         enrichment=enrichment,
         risk=RiskAssessment(

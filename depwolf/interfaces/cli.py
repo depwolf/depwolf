@@ -32,7 +32,22 @@ from depwolf.infrastructure.cpe_index import DB_PATH
 from depwolf.interfaces.report import build_json_report, build_sarif, render_table
 
 _REPORT_EXTS = (".json", ".txt", ".sarif")
-_SKIP_DIRS = {"node_modules", ".git", "__pycache__", "dist", "build", ".venv", "venv", "target", ".idea", ".vscode"}
+_SKIP_DIRS = {
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "target",
+    ".idea",
+    ".vscode",
+    "site-packages",
+    "dist-info",
+    "egg-info",
+    ".egg-info",
+}
 
 
 def _parse_text_or_json(text: str):
@@ -132,12 +147,26 @@ def _require_db() -> bool:
     try:
         db = _sqlite3.connect(str(DB_PATH))
         row = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cpe_index'").fetchone()
+        count = db.execute("SELECT COUNT(*) FROM cpe_index").fetchone()[0] if row else 0
         db.close()
     except Exception:
         row = None
-    if not row:
-        print(f"error: {DB_PATH} has no cpe_index table (incomplete index)", file=sys.stderr)
-        print("hint: run 'depwolf sync' to rebuild it, or set AVIP_DB_PATH to a valid index", file=sys.stderr)
+        count = 0
+    if not row or count == 0:
+        if row and count == 0:
+            from depwolf.infrastructure.cpe_index import download_index
+
+            msg = f"[sync] index at {DB_PATH} is empty ({count} rows); re-downloading prebuilt index..."
+            print(msg, file=sys.stderr)
+            try:
+                DB_PATH.unlink()
+            except OSError:
+                pass
+            if download_index():
+                print(f"[sync] downloaded prebuilt index to {DB_PATH}", file=sys.stderr)
+                return True
+        print(f"error: {DB_PATH} has no usable index (empty or missing cpe_index table)", file=sys.stderr)
+        print("hint: run 'depwolf sync' to download/rebuild it, or set AVIP_DB_PATH to a valid index", file=sys.stderr)
         return False
     return True
 

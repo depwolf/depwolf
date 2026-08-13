@@ -56,3 +56,13 @@ def test_ignored_cve_filtered(memory_index_store):
     assert "CVE-2021-44228" not in {f["cve_id"] for f in result["prioritized"]}
     reasons = {d["reason"] for d in result["filtered_details"]}
     assert "ignored" in reasons
+
+
+def test_entry_affected_assets_only_matched(index_store):
+    result = prioritize_cves(
+        ["CVE-2021-44228"],
+        "log4j 2.14.1\notherlib 1.0",
+        store=index_store,
+    )
+    entry = next(f for f in result["prioritized"] if f["cve_id"] == "CVE-2021-44228")
+    assert entry["affected_assets"] == ["log4j"], entry["affected_assets"]

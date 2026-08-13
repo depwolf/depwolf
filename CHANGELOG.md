@@ -5,6 +5,19 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-08-13
+
+### Fixed
+- Empty or truncated local index is auto-detected and re-downloaded: a scan now
+  checks row count (`SELECT COUNT(*)`) and replaces a 0-row DB instead of
+  silently reporting every CVE as `not_found`. Clear error if no network.
+- Table/JSON findings now report only the stack assets that actually match a
+  CVE instead of the whole merged stack (previously the `Pkg` column showed the
+  same first asset on every row).
+- Directory scans skip `site-packages`, `dist-info`, and `egg-info` directories,
+  removing venv noise (`entry_points.txt`, `requires.txt`, schema files) from
+  results.
+
 ## [0.1.3] - 2026-08-12
 
 ### Fixed

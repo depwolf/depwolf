@@ -28,6 +28,10 @@ _SKIP_DIRS = {
     ".idea",
     ".vscode",
     "vendor",
+    "site-packages",
+    "dist-info",
+    "egg-info",
+    ".egg-info",
 }
 
 _MANIFEST_PARSERS: dict[str, Callable] = {}
