@@ -5,6 +5,16 @@ All notable changes to depwolf are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-13
+
+### Added
+- Standalone `depwolf remediate <CVE>` now infers the ecosystem of well-known
+  library products (xstream, log4j, jackson-databind, jquery, axios, flask,
+  django, rails, ...) so it emits real Maven/npm/pip/Bundler commands instead of
+  a generic "No OS package maps" advisory. Versions and coordinates stay
+  DB-grounded/curated — nothing is AI-invented, and missing version context is
+  reported honestly (`installed_version`/`applicable` remain null).
+
 ## [0.1.5] - 2026-08-13
 
 ### Added

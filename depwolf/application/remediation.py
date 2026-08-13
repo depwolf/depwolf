@@ -309,6 +309,43 @@ _ECOSYSTEM_LABELS = {
     "php": "Composer (PHP)",
 }
 
+# Well-known library products -> (ecosystem, maven groupId, artifact). Used only
+# when no scan context is available (standalone `depwolf remediate <CVE>`), so a
+# product like xstream still gets real Maven commands instead of a generic OS
+# advisory. Deterministic curated facts, never AI-invented.
+_KNOWN_PRODUCTS: dict[str, tuple[str, str | None, str | None]] = {
+    "xstream": ("java", "com.thoughtworks.xstream", "xstream"),
+    "log4j": ("java", "org.apache.logging.log4j", "log4j-core"),
+    "jackson-databind": ("java", "com.fasterxml.jackson.core", "jackson-databind"),
+    "jackson-core": ("java", "com.fasterxml.jackson.core", "jackson-core"),
+    "jackson-databind-2.9": ("java", "com.fasterxml.jackson.core", "jackson-databind"),
+    "spring-framework": ("java", "org.springframework", "spring-core"),
+    "spring-boot": ("java", "org.springframework.boot", "spring-boot"),
+    "struts2-core": ("java", "org.apache.struts", "struts2-core"),
+    "commons-collections": ("java", "org.apache.commons", "commons-collections"),
+    "commons-text": ("java", "org.apache.commons", "commons-text"),
+    "jquery": ("npm", None, None),
+    "axios": ("npm", None, None),
+    "lodash": ("npm", None, None),
+    "underscore": ("npm", None, None),
+    "flask": ("python", None, None),
+    "django": ("python", None, None),
+    "requests": ("python", None, None),
+    "urllib3": ("python", None, None),
+    "jinja2": ("python", None, None),
+    "rails": ("ruby", None, None),
+    "rack": ("ruby", None, None),
+    "nokogiri": ("ruby", None, None),
+    "react": ("npm", None, None),
+    "moment": ("npm", None, None),
+    "handlebars": ("npm", None, None),
+}
+
+
+def _infer_product_ecosystem(product: str) -> tuple[str, str | None, str | None] | None:
+    """Curated ecosystem for a known library product, else None."""
+    return _KNOWN_PRODUCTS.get((product or "").strip().lower())
+
 
 def _ecosystem_patch(
     ecosystem: str,
@@ -526,6 +563,17 @@ def generate_remediation(
     group = ctx.get("group")
     manifest = ctx.get("manifest")
 
+    # Standalone `depwolf remediate` has no scan context: infer a known library
+    # ecosystem so xstream/jackson/log4j get real Maven (etc.) commands.
+    if not ecosystem:
+        known = _infer_product_ecosystem(facts["product"])
+        if known:
+            ecosystem, known_group, known_artifact = known
+            if not group:
+                group = known_group
+            if known_artifact:
+                artifact = known_artifact
+
     applicable = _installed_applicability(installed, facts["ranges"])
 
     if ecosystem and ecosystem in _ECOSYSTEM_LABELS:
@@ -553,7 +601,14 @@ def generate_remediation(
             f"({ranges_str}) — no upgrade is required for {cve_id}."
         )
     elif fixed:
-        recommended = f"Upgrade {artifact} to {fixed} or later."
+        if ecosystem == "java":
+            recommended = (
+                f"Upgrade {artifact} to {fixed} or later (Maven dependency — update the <version> in pom.xml)."
+            )
+        elif ecosystem == "npm":
+            recommended = f"Upgrade {artifact} to {fixed} or later (npm package)."
+        else:
+            recommended = f"Upgrade {artifact} to {fixed} or later."
     else:
         recommended = (
             f"No fixed version published for {cve_id} yet — apply the vendor "

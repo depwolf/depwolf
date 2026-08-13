@@ -239,3 +239,18 @@ def test_remediation_compatibility_warning(index_store):
     assert rem["applicable"] is False
     # 1.x -> 2.15.0 is a major-version jump, so a warning is emitted regardless
     assert rem["compatibility_warning"] is not None
+
+
+def test_remediation_standalone_infers_known_ecosystem(index_store):
+    # No scan context: standalone `depwolf remediate CVE-...` infers the known
+    # library ecosystem so log4j gets real Maven commands instead of a generic
+    # OS advisory, while staying honest about missing version context.
+    rem = generate_remediation("CVE-2021-44228", store=index_store)
+    assert rem["ecosystem"] == "java"
+    assert rem["package"] == "log4j-core"
+    assert rem["installed_version"] is None
+    assert rem["applicable"] is None
+    assert any("mvn versions:use-dep-version" in c for c in rem["patch_commands"])
+    assert "org.apache.logging.log4j:log4j-core" in " ".join(rem["patch_commands"])
+    assert "mvn dependency:tree" in rem["verification"]
+    assert rem["recommended_action"].startswith("Upgrade log4j-core to 2.15.0 or later (Maven dependency")
