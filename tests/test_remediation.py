@@ -171,11 +171,17 @@ def test_remediation_maven_ecosystem(index_store):
             "artifact": "log4j-core",
             "manifest": "pom.xml",
             "direct": True,
+            "version_confidence": "EXACT",
+            "version_source": "manifest",
         },
     )
     assert rem["ecosystem"] == "java"
     assert rem["installed_version"] == "2.14.1"
-    assert rem["applicable"] is True
+    assert rem["applicable"] == "YES"
+    assert rem["version_confidence"] == "EXACT"
+    assert rem["version_source"] == "manifest"
+    assert rem["dependency_type"] == "DIRECT"
+    assert rem["applicability_note"] is None
     assert rem["minimum_safe_version"] == "2.15.0"
     assert rem["fixed_version"] == "2.15.0"
     assert any("mvn dependency:tree" in c for c in rem["patch_commands"])
@@ -218,6 +224,7 @@ def test_remediation_transitive_explanation(index_store):
     assert "transitive" in rem["transitive_explanation"].lower()
     assert "app > starter > log4j-core" in rem["transitive_explanation"]
     assert rem["dependency_path"] == ["app", "starter", "log4j-core"]
+    assert rem["dependency_type"] == "TRANSITIVE"
 
 
 def test_remediation_version_not_affected(index_store):
@@ -226,7 +233,7 @@ def test_remediation_version_not_affected(index_store):
         store=index_store,
         context={"installed_version": "1.0", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
     )
-    assert rem["applicable"] is False
+    assert rem["applicable"] == "NO"
     assert "outside the affected ranges" in rem["recommended_action"]
 
 
@@ -236,7 +243,7 @@ def test_remediation_compatibility_warning(index_store):
         store=index_store,
         context={"installed_version": "1.9", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
     )
-    assert rem["applicable"] is False
+    assert rem["applicable"] == "NO"
     # 1.x -> 2.15.0 is a major-version jump, so a warning is emitted regardless
     assert rem["compatibility_warning"] is not None
 
@@ -249,7 +256,12 @@ def test_remediation_standalone_infers_known_ecosystem(index_store):
     assert rem["ecosystem"] == "java"
     assert rem["package"] == "log4j-core"
     assert rem["installed_version"] is None
-    assert rem["applicable"] is None
+    assert rem["applicable"] == "UNKNOWN"
+    assert "resolved version could not be determined" in rem["applicability_note"]
+    assert rem["version_confidence"] == "UNKNOWN"
+    assert rem["version_source"] == "unavailable"
+    assert rem["dependency_type"] == "UNKNOWN"
+    assert rem["dependency_path"] is None
     assert any("mvn versions:use-dep-version" in c for c in rem["patch_commands"])
     assert "org.apache.logging.log4j:log4j-core" in " ".join(rem["patch_commands"])
     assert "mvn dependency:tree" in rem["verification"]
