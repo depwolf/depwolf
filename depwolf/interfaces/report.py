@@ -257,7 +257,7 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
     )
     lines.extend(_banner(" DEPWOLF — remediation", summary, color))
 
-    headers = ["CVE", "Package", "Ecosystem", "Type", "Severity", "Risk", "Fixed", "Applicable", "Priority", "Source"]
+    headers = ["CVE", "Package", "Ecosystem", "Severity", "Risk", "Fixed", "Applicable", "Priority", "Source"]
     rows: list[list[str]] = []
     for e in found:
         rows.append(
@@ -265,18 +265,16 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
                 str(e.get("cve_id", "?")),
                 str(e.get("package") or e.get("product") or "-"),
                 str(e.get("ecosystem") or "-"),
-                str(e.get("dependency_type") or "UNKNOWN"),
                 str(e.get("severity") or "?"),
                 str(e.get("risk_score")),
                 str(e.get("fixed_version") or e.get("minimum_safe_version") or "-"),
-                str(e.get("applicable") or "UNKNOWN"),
+                {True: "yes", False: "no", None: "?"}.get(e.get("applicable"), "?"),
                 str(e.get("patch_priority") or "-"),
                 str(e.get("remediation_source") or "-"),
             ]
         )
-    maxw = [17, 22, 10, 10, 10, 7, 12, 11, 12, 9]
-    style = (lambda i, p, r: _color_style(i - 1, p, r)) if color else None
-    lines.extend(_table(headers, rows, color, style, maxw))
+    maxw = [17, 22, 10, 10, 7, 12, 11, 12, 9]
+    lines.extend(_table(headers, rows, color, _color_style if color else None, maxw))
 
     for e in entries:
         cve = str(e.get("cve_id", "?"))
@@ -291,10 +289,6 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
         rec = e.get("recommended_action")
         if rec:
             body.append(f"fix    {rec}")
-        if e.get("applicability_note"):
-            body.append(f"note   {e['applicability_note']}")
-        if e.get("dependency_path"):
-            body.append("path   " + " > ".join(str(p) for p in e["dependency_path"]))
         for cmd in e.get("patch_commands") or []:
             body.append(f"patch  {cmd}")
         for step in e.get("step_by_step_fix") or []:
