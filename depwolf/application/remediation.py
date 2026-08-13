@@ -498,9 +498,9 @@ def _compatibility_warning(installed: str | None, fixed: str | None) -> str | No
     return None
 
 
-def _executive_summary(cve_id, cvss, severity, product, is_kev, fixed_version=None):
+def _executive_summary(cve_id, cvss, severity, vendor, product, is_kev, fixed_version=None):
     parts = [
-        f"{cve_id} ({product}) — CVSS {cvss} ({severity}).",
+        f"{cve_id} ({vendor} {product}) — CVSS {cvss} ({severity}).",
     ]
     if fixed_version:
         parts.append(f"Upgrade {product} to {fixed_version} or later to remediate.")
@@ -513,13 +513,13 @@ def _executive_summary(cve_id, cvss, severity, product, is_kev, fixed_version=No
     return " ".join(parts)
 
 
-def _step_by_step(cve_id, is_kev, cvss, package, fixed_version):
+def _step_by_step(cve_id, is_kev, cvss, vendor, product, fixed_version):
     steps = [
-        f"1. Inventory all systems running {package}",
+        f"1. Inventory all systems running {vendor} {product}",
         "2. Check the currently installed version (see verification commands below)",
     ]
     if fixed_version:
-        steps.append(f"3. Upgrade {package} to {fixed_version} or later (see patch commands below)")
+        steps.append(f"3. Upgrade {product} to {fixed_version} or later (see patch commands below)")
     else:
         steps.append("3. No fixed version published yet — apply the vendor-recommended mitigation")
     steps += [
@@ -534,9 +534,9 @@ def _step_by_step(cve_id, is_kev, cvss, package, fixed_version):
     return steps
 
 
-def _root_cause(desc, product):
+def _root_cause(desc, vendor, product):
     snippet = (desc or "")[:2500] + ("..." if desc and len(desc) > 2500 else "")
-    return f"The root cause in {product} is: {snippet}"
+    return f"The root cause in {vendor} {product} is: {snippet}"
 
 
 def generate_remediation(
@@ -575,30 +575,6 @@ def generate_remediation(
                 artifact = known_artifact
 
     applicable = _installed_applicability(installed, facts["ranges"])
-    if applicable is True:
-        applicable_label = "YES"
-        applicability_note = None
-    elif applicable is False:
-        applicable_label = "NO"
-        applicability_note = None
-    else:
-        applicable_label = "UNKNOWN"
-        if not installed:
-            applicability_note = "Package identity was identified, but the resolved version could not be determined."
-        else:
-            applicability_note = (
-                "Installed version is known, but no authoritative affected range could be matched in the local index."
-            )
-
-    version_confidence = ctx.get("version_confidence") or ("EXACT" if installed else "UNKNOWN")
-    version_source = ctx.get("version_source") or ("unavailable" if not installed else "dependency_tree")
-    if ctx.get("direct") is True:
-        dependency_type = "DIRECT"
-    elif ctx.get("direct") is False:
-        dependency_type = "TRANSITIVE"
-    else:
-        dependency_type = "UNKNOWN"
-    dependency_path = list(ctx["path"]) if ctx.get("path") else None
 
     if ecosystem and ecosystem in _ECOSYSTEM_LABELS:
         cmds = _ecosystem_patch(ecosystem, artifact, group, installed, fixed, cve_id)
@@ -643,6 +619,7 @@ def generate_remediation(
         cve_id,
         facts["cvss_score"],
         facts["cvss_severity"],
+        facts["vendor"],
         facts["product"],
         is_kev,
         fixed,
@@ -659,12 +636,7 @@ def generate_remediation(
         "package": artifact,
         "ecosystem": ecosystem,
         "installed_version": installed,
-        "version_confidence": version_confidence,
-        "version_source": version_source,
-        "dependency_type": dependency_type,
-        "dependency_path": dependency_path,
-        "applicable": applicable_label,
-        "applicability_note": applicability_note,
+        "applicable": applicable,
         "cvss_score": facts["cvss_score"],
         "cvss_severity": facts["cvss_severity"],
         "epss_score": facts["epss_score"],
@@ -678,15 +650,17 @@ def generate_remediation(
         "affected_versions": facts["affected_versions"],
         "recommended_action": recommended,
         "direct": ctx.get("direct"),
+        "dependency_path": list(ctx["path"]) if ctx.get("path") else None,
         "manifest": manifest,
         "patch_commands": cmds,
         "file_change": file_change,
         "compatibility_warning": compat,
         "transitive_explanation": transitive,
         "step_by_step_fix": (ai or {}).get("step_by_step_fix")
-        or _step_by_step(cve_id, is_kev, facts["cvss_score"], artifact, fixed),
+        or _step_by_step(cve_id, is_kev, facts["cvss_score"], facts["vendor"], facts["product"], fixed),
         "executive_summary": (ai or {}).get("executive_summary") or summary,
-        "root_cause": (ai or {}).get("root_cause") or _root_cause(facts["description"], artifact),
+        "root_cause": (ai or {}).get("root_cause")
+        or _root_cause(facts["description"], facts["vendor"], facts["product"]),
         "verification": verification,
         "remediation_source": "ai" if ai else "template",
     }
