@@ -51,6 +51,18 @@ def _clean_version(v: str | None) -> str | None:
     return v or None
 
 
+def _version_meta(version: str | None, source: str) -> dict:
+    """Provenance for a resolved version: EXACT/UNKNOWN + where it came from.
+
+    A version is EXACT only when the manifest/lockfile pins it. Unknown versions
+    report ``unavailable`` as their source so consumers never guess.
+    """
+    return {
+        "version_confidence": "EXACT" if version else "UNKNOWN",
+        "version_source": source if version else "unavailable",
+    }
+
+
 def _parse_requirements(path: Path) -> list[dict]:
     deps: list[dict] = []
     try:
@@ -77,6 +89,7 @@ def _parse_requirements(path: Path) -> list[dict]:
                 "ecosystem": "python",
                 "artifact": name,
                 "direct": True,
+                **_version_meta(version, "manifest"),
             }
         )
     return deps
@@ -100,14 +113,16 @@ def _parse_package_json(path: Path) -> list[dict]:
     for section in ("dependencies", "devDependencies"):
         for name, spec in (data.get(section) or {}).items():
             group, artifact = _npm_split(str(name))
+            version = _clean_version(str(spec))
             deps.append(
                 {
                     "name": str(name),
-                    "version": _clean_version(str(spec)),
+                    "version": version,
                     "ecosystem": "npm",
                     "group": group,
                     "artifact": artifact,
                     "direct": True,
+                    **_version_meta(version, "manifest"),
                 }
             )
     return deps
@@ -135,6 +150,7 @@ def _parse_package_lock(path: Path) -> list[dict]:
             "group": group,
             "artifact": artifact,
             "direct": direct,
+            **_version_meta(version, "lockfile"),
         }
         if chain:
             d["path"] = chain
@@ -159,10 +175,26 @@ def _parse_package_lock(path: Path) -> list[dict]:
                 continue
             info = info if isinstance(info, dict) else {}
             name = str(loc)
+            chain: tuple[str, ...] | None = None
+            direct: bool | None = None
             if name.startswith("node_modules/"):
-                name = name[len("node_modules/") :]
+                rel = name[len("node_modules/") :]
+                chain = tuple(rel.split("/node_modules/"))
+                direct = len(chain) == 1
+                name = chain[-1]
             group, artifact = _npm_split(name)
-            add(f"@{group}/{artifact}" if group else artifact, info.get("version"), None, None)
+            d = {
+                "name": f"@{group}/{artifact}" if group else artifact,
+                "version": _clean_version(info.get("version")),
+                "ecosystem": "npm",
+                "group": group,
+                "artifact": artifact,
+                "direct": direct,
+                **_version_meta(_clean_version(info.get("version")), "lockfile"),
+            }
+            if chain:
+                d["path"] = chain
+            deps.append(d)
     return deps
 
 
@@ -184,14 +216,16 @@ def _parse_yarn_lock(path: Path) -> list[dict]:
             m = re.match(r'^version\s+"?([^"\s]+)', stripped)
             if m:
                 group, artifact = _npm_split(name)
+                version = _clean_version(m.group(1))
                 deps.append(
                     {
                         "name": name,
-                        "version": _clean_version(m.group(1)),
+                        "version": version,
                         "ecosystem": "npm",
                         "group": group,
                         "artifact": artifact,
                         "direct": None,
+                        **_version_meta(version, "lockfile"),
                     }
                 )
             name = None
@@ -220,9 +254,20 @@ def _parse_go_mod(path: Path) -> list[dict]:
                 "group": module,
                 "artifact": name,
                 "direct": not indirect,
+                **_version_meta(m.group(2), "manifest"),
             }
         )
     return deps
+
+
+def _pom_properties(text: str) -> dict[str, str]:
+    """Resolve Maven <properties> blocks into a {name: value} map."""
+    props: dict[str, str] = {}
+    m = re.search(r"<properties>(.*?)</properties>", text, re.S)
+    if m:
+        for pm in re.finditer(r"<([a-zA-Z0-9._-]+)>(.*?)</\1>", m.group(1), re.S):
+            props[pm.group(1)] = pm.group(2).strip()
+    return props
 
 
 def _parse_pom(path: Path) -> list[dict]:
@@ -231,6 +276,7 @@ def _parse_pom(path: Path) -> list[dict]:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return deps
+    props = _pom_properties(text)
     for block in re.findall(r"<dependency>(.*?)</dependency>", text, re.S):
         g = re.search(r"<groupId>(.*?)</groupId>", block, re.S)
         a = re.search(r"<artifactId>(.*?)</artifactId>", block, re.S)
@@ -239,9 +285,14 @@ def _parse_pom(path: Path) -> list[dict]:
             continue
         group = g.group(1).strip() if g else ""
         artifact = a.group(1).strip()
-        version = _clean_version(v.group(1).strip()) if v else None
-        if version and v is not None and "${" in v.group(1):
-            version = None
+        raw = v.group(1).strip() if v else ""
+        version = None
+        if raw:
+            prop = re.fullmatch(r"\$\{([^}]+)\}", raw)
+            if prop:
+                version = _clean_version(props.get(prop.group(1), "")) if prop.group(1) in props else None
+            else:
+                version = _clean_version(raw)
         deps.append(
             {
                 "name": f"{group}:{artifact}" if group else artifact,
@@ -250,6 +301,7 @@ def _parse_pom(path: Path) -> list[dict]:
                 "group": group,
                 "artifact": artifact,
                 "direct": True,
+                **_version_meta(version, "manifest"),
             }
         )
     return deps
@@ -265,13 +317,15 @@ def _parse_gemfile_lock(path: Path) -> list[dict]:
         m = re.match(r"^\s{4}(\S+)\s+\(([^)]+)\)", line)
         if not m:
             continue
+        version = _clean_version(m.group(2))
         deps.append(
             {
                 "name": m.group(1),
-                "version": _clean_version(m.group(2)),
+                "version": version,
                 "ecosystem": "ruby",
                 "artifact": m.group(1),
                 "direct": True,
+                **_version_meta(version, "lockfile"),
             }
         )
     return deps
@@ -354,6 +408,7 @@ def _parse_cargo_lock(path: Path) -> list[dict]:
                 "artifact": p["name"],
                 "direct": direct,
                 "path": dep_path,
+                **_version_meta(p["version"], "lockfile"),
             }
         )
     return deps
@@ -368,7 +423,15 @@ def _parse_pipfile_lock(path: Path) -> list[dict]:
     for section in ("default", "develop"):
         for name, info in (data.get(section) or {}).items():
             version = _clean_version(info.get("version")) if isinstance(info, dict) else None
-            deps.append({"name": name, "version": version, "ecosystem": "python", "artifact": name})
+            deps.append(
+                {
+                    "name": name,
+                    "version": version,
+                    "ecosystem": "python",
+                    "artifact": name,
+                    **_version_meta(version, "lockfile"),
+                }
+            )
     return deps
 
 
@@ -382,13 +445,15 @@ def _parse_composer_lock(path: Path) -> list[dict]:
         name = (pkg.get("name") or "").split("/")[-1]
         if not name:
             continue
+        version = _clean_version(pkg.get("version"))
         deps.append(
             {
                 "name": name,
-                "version": _clean_version(pkg.get("version")),
+                "version": version,
                 "ecosystem": "php",
                 "artifact": name,
                 "direct": None,
+                **_version_meta(version, "lockfile"),
             }
         )
     return deps
@@ -406,13 +471,15 @@ def _parse_pyproject(path: Path) -> list[dict]:
     )
     for m in re.finditer(pattern, text):
         name, op, ver = m.group(1), m.group(2), m.group(3)
+        version = ver if op == "==" else None
         deps.append(
             {
                 "name": name,
-                "version": ver if op == "==" else None,
+                "version": version,
                 "ecosystem": "python",
                 "artifact": name,
                 "direct": True,
+                **_version_meta(version, "manifest"),
             }
         )
     return deps
