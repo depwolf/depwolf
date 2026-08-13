@@ -88,7 +88,12 @@ _REMED = {
     "risk_score": 93.7,
     "fixed_version": "1.4.18",
     "minimum_safe_version": "1.4.18",
-    "applicable": None,
+    "applicable": "YES",
+    "applicability_note": None,
+    "version_confidence": "EXACT",
+    "version_source": "manifest",
+    "dependency_type": "DIRECT",
+    "dependency_path": ["app", "xstream"],
     "patch_priority": "Immediate",
     "remediation_source": "template",
     "kev": True,
@@ -118,11 +123,20 @@ def test_render_remediation_table_overview_and_cards():
     assert "\x1b[" not in out
 
 
-def test_render_remediation_table_applicable_mapping():
-    yes = dict(_REMED, applicable=True)
-    no = dict(_REMED, applicable=False)
-    out = render_remediation_table([yes, no])
-    assert "yes" in out and "no" in out
+def test_render_remediation_table_tristate_and_type_columns():
+    yes = dict(_REMED, applicable="YES", dependency_type="DIRECT")
+    no = dict(_REMED, applicable="NO", dependency_type="TRANSITIVE")
+    unk = dict(
+        _REMED,
+        applicable="UNKNOWN",
+        dependency_type="UNKNOWN",
+        applicability_note="resolved version could not be determined.",
+    )
+    out = render_remediation_table([yes, no, unk])
+    assert "YES" in out and "NO" in out and "UNKNOWN" in out
+    assert "DIRECT" in out and "TRANSITIVE" in out
+    assert "resolved version could not be determined." in out
+    assert "path   app > xstream" in out
 
 
 def test_render_remediation_table_no_threshold_banner():
