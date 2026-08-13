@@ -100,6 +100,21 @@ def test_single_bound_range_low_and_high():
     assert not _version_in_range("3.0", "2.0", None, None, "2.15.0")
 
 
+def test_multi_range_matches_any_bounded_range():
+    # Two disjoint affected ranges (e.g. < 1.0 and >= 2.0 < 2.15.0).
+    from depwolf.application.remediation import _installed_applicability
+
+    ranges = [("0.8", None, None, "1.0"), ("2.0", None, None, "2.15.0")]
+    assert _installed_applicability("0.9", ranges) is True
+    assert _installed_applicability("2.14.1", ranges) is True
+    assert _installed_applicability("1.5", ranges) is False
+    assert _installed_applicability("2.15.0", ranges) is False
+    assert _installed_applicability("0.7", ranges) is False
+    assert _installed_applicability(None, ranges) is None
+    # An unbounded range means "all versions affected".
+    assert _installed_applicability("9.9.9", [("0.8", None, None, "1.0"), (None, None, None, None)]) is True
+
+
 def test_format_range_human_readable():
     from depwolf.domain.versions import format_range
 

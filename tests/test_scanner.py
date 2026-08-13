@@ -117,7 +117,40 @@ def test_pom(tmp_path):
     deps = parse_manifests([p])
     by_name = {d["name"]: d for d in deps}
     assert by_name["org.apache.logging.log4j:log4j-core"]["version"] == "2.14.1"
+    assert by_name["org.apache.logging.log4j:log4j-core"]["version_confidence"] == "EXACT"
+    assert by_name["org.apache.logging.log4j:log4j-core"]["version_source"] == "manifest"
     assert by_name["com.example:skipped"]["version"] is None
+    assert by_name["com.example:skipped"]["version_confidence"] == "UNKNOWN"
+    assert by_name["com.example:skipped"]["version_source"] == "unavailable"
+
+
+def test_pom_property_resolution(tmp_path):
+    pom = """<project>
+  <properties>
+    <log4j.version>2.14.1</log4j.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>${log4j.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>unresolved</artifactId>
+      <version>${missing.version}</version>
+    </dependency>
+  </dependencies>
+</project>
+"""
+    p = _write(tmp_path, "pom.xml", pom)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    assert by_name["org.apache.logging.log4j:log4j-core"]["version"] == "2.14.1"
+    assert by_name["org.apache.logging.log4j:log4j-core"]["version_confidence"] == "EXACT"
+    assert by_name["org.apache.logging.log4j:log4j-core"]["version_source"] == "manifest"
+    assert by_name["com.example:unresolved"]["version"] is None
+    assert by_name["com.example:unresolved"]["version_confidence"] == "UNKNOWN"
 
 
 def test_gemfile_and_cargo(tmp_path):
@@ -203,8 +236,35 @@ def test_package_lock_nested_is_transitive(tmp_path):
     deps = parse_manifests([p])
     by_name = {d["name"]: d for d in deps}
     assert by_name["express"]["direct"] is True
+    assert by_name["express"]["version_confidence"] == "EXACT"
+    assert by_name["express"]["version_source"] == "lockfile"
     assert by_name["body-parser"]["direct"] is False
     assert by_name["body-parser"]["path"] == ("express", "body-parser")
+    assert by_name["body-parser"]["version_confidence"] == "EXACT"
+    assert by_name["body-parser"]["version_source"] == "lockfile"
+
+
+def test_package_lock_v2_node_modules_paths(tmp_path):
+    lock = json.dumps(
+        {
+            "name": "demo",
+            "lockfileVersion": 2,
+            "packages": {
+                "": {"name": "demo", "version": "1.0.0"},
+                "node_modules/express": {"version": "4.17.1"},
+                "node_modules/express/node_modules/body-parser": {"version": "1.19.0"},
+            },
+        }
+    )
+    p = _write(tmp_path, "package-lock.json", lock)
+    deps = parse_manifests([p])
+    by_name = {d["name"]: d for d in deps}
+    assert by_name["express"]["direct"] is True
+    assert by_name["express"]["path"] == ("express",)
+    assert by_name["body-parser"]["direct"] is False
+    assert by_name["body-parser"]["path"] == ("express", "body-parser")
+    assert by_name["express"]["version_confidence"] == "EXACT"
+    assert by_name["express"]["version_source"] == "lockfile"
 
 
 def test_cargo_lock_transitive_path(tmp_path):
