@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from depwolf import __version__
@@ -92,48 +93,127 @@ def _sarif_level(severity: str | None) -> str:
     return "note"
 
 
+_BOX = {
+    "tl": "┌",
+    "tr": "┐",
+    "bl": "└",
+    "br": "┘",
+    "h": "─",
+    "v": "│",
+    "m": "┬",
+    "b": "┤",
+    "l": "├",
+    "c": "┼",
+    "t": "┴",
+}
+_MAXW = [17, 20, 12, 10, 7, 12, 11, 10]
+_SEV_COLOR = {"Critical": "91", "High": "95", "Medium": "93", "Low": "94"}
+
+
+def _color(text: str, code: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def _table(
+    headers: list[str],
+    rows: list[list[str]],
+    color: bool,
+    style: Callable[[int, str, str], str] | None = None,
+) -> list[str]:
+    n = len(headers)
+    widths = [max(len(h), 1) for h in headers]
+    for r in rows:
+        for i, cell in enumerate(r):
+            widths[i] = max(widths[i], len(cell))
+    for i in range(n):
+        widths[i] = min(widths[i], _MAXW[i] if i < len(_MAXW) else 16)
+
+    def line(tl: str, join: str, br: str) -> str:
+        inner = _BOX[join].join(f"{_BOX['h'] * (w + 2)}" for w in widths)
+        return _BOX[tl] + inner + _BOX[br]
+
+    def fmt(cells: list[str], right: set[int], header: bool = False) -> str:
+        parts = []
+        for i, cell in enumerate(cells):
+            s = cell if len(cell) <= widths[i] else cell[: max(1, widths[i] - 1)] + "…"
+            s = s.ljust(widths[i]) if i not in right else s.rjust(widths[i])
+            if header and color:
+                s = _color(s, "1;4")
+            elif style:
+                s = style(i, s, cell)
+            parts.append(f" {s} ")
+        return _BOX["v"] + _BOX["v"].join(parts) + _BOX["v"]
+
+    out = [line("tl", "m", "tr"), fmt(headers, set(), header=True), line("l", "c", "b")]
+    out.extend(fmt(r, {4}) for r in rows)
+    out.append(line("bl", "t", "br"))
+    if color:
+        out[0] = _color(out[0], "1")
+        out[2] = _color(out[2], "1")
+        out[-1] = _color(out[-1], "1")
+    return out
+
+
 def render_table(result: dict) -> str:
-    lines = []
-    lines.append("=" * 100)
-    lines.append(" DEPWOLF — prioritized findings")
+    import os
+    import sys
+    from collections import Counter
+
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    lines: list[str] = []
     total = result.get("total_scanned", 0)
-    lines.append(
-        f" candidates: {total}  actionable: {result.get('actionable', result.get('found'))}  "
-        f"not_applicable: {result.get('not_applicable')}  "
-        f"risk_suppressed: {result.get('risk_suppressed')}"
-    )
     reduction = result.get("reduction_rate")
     na_rate = result.get("not_applicable_rate")
-    lines.append(
-        f" overall reduction: {reduction}%  "
-        f"(not_applicable: {na_rate}%, legacy fp-rate: {result.get('false_positive_rate')}%)"
+    summary = (
+        f" candidates: {total}   actionable: {result.get('actionable', result.get('found'))}   "
+        f"not_applicable: {result.get('not_applicable')}   "
+        f"risk_suppressed: {result.get('risk_suppressed')}\n"
+        f" reduction: {reduction}%   (not_applicable: {na_rate}% · legacy fp-rate: "
+        f"{result.get('false_positive_rate')}%)"
     )
-    lines.append("=" * 100)
-    header = (
-        f"{'CVE':<18}{'Package':<22}{'Version':<12}{'Severity':<10}"
-        f"{'Risk':<7}{'Fixed':<12}{'Priority':<12}{'Confidence'}"
-    )
-    lines.append(header)
-    lines.append("-" * 100)
+    w = max(len(summary.splitlines()[0]), len(summary.splitlines()[1]), 44) + 1
+    top = "╔" + "═" * (w + 2) + "╗"
+    title = " DEPWOLF — prioritized findings".ljust(w + 2)
+    lines.append(_color(top, "1;36") if color else top)
+    lines.append(_color("║" + title + "║", "1;36") if color else "║" + title + "║")
+    for row in summary.splitlines():
+        pad = " " + row.ljust(w + 1)
+        lines.append("║" + pad + "║")
+    lines.append("╚" + "═" * (w + 2) + "╝")
+
+    headers = ["CVE", "Package", "Version", "Severity", "Risk", "Fixed", "Priority", "Confidence"]
+    rows: list[list[str]] = []
     for f in result.get("prioritized", []):
         assets = f.get("affected_assets")
         pkg = assets[0] if assets else (f.get("pkg") or "?")
         ver = f.get("installed_version") or f.get("version") or "-"
-        sev = f.get("severity") or "?"
-        risk = f.get("risk_score")
+        sev = str(f.get("severity") or "?")
+        risk = str(f.get("risk_score"))
         fixed = f.get("fixed_version") or "-"
         pp = f.get("patch_priority") or "-"
         conf = f.get("match_confidence") or "-"
-        lines.append(
-            f"{f.get('cve_id', '?'):<18}{str(pkg):<22}{str(ver):<12}{str(sev):<10}"
-            f"{str(risk):<7}{str(fixed):<12}{str(pp):<12}{conf}"
-        )
-    if result.get("filtered_details"):
-        lines.append("-" * 100)
-        from collections import Counter
+        rows.append([str(f.get("cve_id", "?")), str(pkg), str(ver), sev, risk, str(fixed), str(pp), str(conf)])
 
+    def _style(i: int, padded: str, raw: str) -> str:
+        if i == 3:
+            return _color(padded, _SEV_COLOR.get(raw, "0"))
+        if i == 4:
+            try:
+                risk = float(raw)
+            except (TypeError, ValueError):
+                return padded
+            return _color(padded, "91;1" if risk >= 80 else ("93" if risk >= 60 else "0"))
+        return padded
+
+    t = _table(headers, rows, color, _style if color else None)
+    lines.extend(t)
+
+    if result.get("filtered_details"):
         reasons = Counter(d.get("reason") for d in result["filtered_details"])
-        for reason, n in reasons.most_common():
-            lines.append(f" filtered: {n}x {reason}")
-    lines.append("=" * 100)
+        foot = "Filtered: " + "  ·  ".join(f"{n}x {reason}" for reason, n in reasons.most_common())
+        width = max(min(max(len(x) for x in t), 72), len(foot), 44)
+        lines.append("")
+        lines.append("┌" + "─" * (width + 2) + "┐")
+        lines.append("│ " + foot.ljust(width) + " │")
+        lines.append("└" + "─" * (width + 2) + "┘")
     return "\n".join(lines)
