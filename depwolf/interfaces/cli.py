@@ -36,22 +36,26 @@ _SKIP_DIRS = {"node_modules", ".git", "__pycache__", "dist", "build", ".venv", "
 
 
 def _parse_text_or_json(text: str):
+    text = text.lstrip("\ufeff")  # tolerate a UTF-8 BOM
     t = text.lstrip()
     if t.startswith("{") or t.startswith("["):
         try:
-            return json.loads(text)
+            return json.loads(t)
         except json.JSONDecodeError as e:
-            raise SystemExit(f"error: invalid JSON input: {e}") from e
+            raise ValueError(f"invalid JSON input: {e}") from e
     return text
 
 
 def _read_input(path: str):
     if path == "-":
-        return _parse_text_or_json(sys.stdin.read())
+        try:
+            return _parse_text_or_json(sys.stdin.read())
+        except ValueError as e:
+            raise SystemExit(f"error: {e}") from e
     p = Path(path)
     if not p.exists():
         raise SystemExit(f"error: no such file or directory: {p}")
-    return _parse_text_or_json(p.read_text(encoding="utf-8", errors="replace"))
+    return _parse_text_or_json(p.read_text(encoding="utf-8-sig", errors="replace"))
 
 
 def _find_report_files(root: Path):
