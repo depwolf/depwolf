@@ -113,6 +113,15 @@ def _collect_findings(inputs: list[str]) -> list[CVEReference]:
     return dedupe_cves(findings)
 
 
+def _build_dep_index(deps: list[dict]) -> dict:
+    index: dict = {}
+    for d in deps:
+        index[d["name"]] = d
+        if d.get("artifact"):
+            index.setdefault(d["artifact"], d)
+    return index
+
+
 def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
     assets = entry.get("affected_assets") or []
     asset = assets[0] if assets else entry.get("pkg")
@@ -264,6 +273,8 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
             native_stack = native.get("stack") or ""
             stack = "\n".join(dict.fromkeys((native_stack + "\n" + stack).splitlines()))
 
+    dep_index = _build_dep_index(native["deps"]) if native and native.get("deps") else None
+
     result = prioritize_cves(
         cve_ids,
         stack or None,
@@ -271,6 +282,7 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
         refs=findings,
         plan=native and native.get("plan"),
         plan_conf=native and native.get("plan_conf"),
+        deps_index=dep_index or None,
     )
 
     result["total_scanned"] = len(cve_ids)
@@ -282,16 +294,14 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
         result["deps"] = native["deps"]
 
     if with_remediation:
-        dep_index = None
-        if native:
-            dep_index = {}
-            for d in native["deps"]:
-                dep_index[d["name"]] = d
-                if d.get("artifact"):
-                    dep_index.setdefault(d["artifact"], d)
         _attach_remediation(result.get("prioritized", []), dep_index)
     else:
         print("[scan] remediation skipped (--no-remediate)", file=sys.stderr)
+
+    if native and native.get("deps"):
+        from depwolf.infrastructure.store import SqliteIndexStore
+
+        SqliteIndexStore().save_scan_deps(native["deps"])
 
     return _emit(result, threshold, fmt, save_path)
 
@@ -334,23 +344,70 @@ def _emit(result: dict, threshold: int, fmt: str, save_path: str | None = None) 
     return 0
 
 
+def _scan_state_context(cve_id: str, deps: list[dict], dep_index: dict, store: object) -> dict | None:
+    """Best-matching dependency context from the latest manifest scan.
+
+    Standalone `depwolf remediate <CVE>` must reuse the exact canonical version
+    data the scan resolved, so it picks the persisted dependency whose name /
+    artifact matches the CVE's authoritative product(s) — the same product-match
+    rules the funnel used — and feeds it to generate_remediation.
+    """
+    rows = store.cve(cve_id) if hasattr(store, "cve") else []
+    row_products = sorted({r.product for r in rows if r.product})
+    if not deps or not row_products:
+        return None
+    from depwolf.domain.match import product_match_confidence
+    from depwolf.domain.versions import _normalize
+
+    order = {"exact": 4, "alias": 3, "canonical": 3, "fuzzy": 2, "heuristic": 1}
+    best: dict | None = None
+    best_score = 0
+    best_name: str | None = None
+    for dep in deps:
+        keys = [dep.get("name"), dep.get("artifact")]
+        for key in dict.fromkeys(keys):
+            if not key:
+                continue
+            norm = _normalize(str(key).split(":")[-1])
+            for rp in row_products:
+                conf = product_match_confidence(norm, rp)
+                score = order.get(conf or "", 0)
+                if score > best_score:
+                    best_score = score
+                    best = dep
+                    best_name = str(key)
+    if best is None:
+        return None
+    return _remediation_context(dep_index, {"affected_assets": [best_name or best["name"]], "pkg": best_name})
+
+
 def _remediate(cves: list[str], threshold: int, fmt: str = "table") -> int:
     if not _require_db():
         return 2
+    from depwolf.infrastructure.store import SqliteIndexStore
+
+    store = SqliteIndexStore()
+    deps = store.load_scan_deps()
+    dep_index = _build_dep_index(deps)
     results = []
     for cve in cves:
-        results.append(generate_remediation(cve))
+        ctx = _scan_state_context(cve, deps, dep_index, store)
+        results.append(generate_remediation(cve, store=store, context=ctx))
     if fmt == "table":
         print(render_remediation_table(results, threshold))
     else:
         out = build_json_report({"remediation": results})
         print(json.dumps(out, indent=2, default=str))
-    found = [r for r in results if r.get("found") and (r.get("risk_score") or 0) >= threshold]
+    found = [
+        r
+        for r in results
+        if r.get("found") and r.get("applicable") == "YES" and (r.get("risk_score") or 0) >= threshold
+    ]
     if found:
-        gate = f"[gate] {len(found)} remediated finding(s) at/above risk threshold {threshold} — remediate"
+        gate = f"[gate] {len(found)} confirmed finding(s) at/above risk threshold {threshold} — remediate"
         print(gate, file=sys.stderr)
         return 1
-    print(f"[gate] no findings at/above risk threshold {threshold} — PASS", file=sys.stderr)
+    print(f"[gate] no confirmed findings at/above risk threshold {threshold} — PASS", file=sys.stderr)
     return 0
 
 

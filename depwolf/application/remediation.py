@@ -498,6 +498,41 @@ def _compatibility_warning(installed: str | None, fixed: str | None) -> str | No
     return None
 
 
+def _safe_upgrade_target(installed: str | None, fixed: str | None) -> str | None:
+    """The fixed version only when upgrading to it is not a downgrade.
+
+    The CVE index's ``fixed_version`` may predate the installed version (e.g. an
+    old advisory whose patched release is older than what the project already
+    ships). Recommending that would silently downgrade a dependency, so it is
+    rejected here and the caller falls back to vendor-advisory guidance.
+    """
+    if not fixed:
+        return None
+    if installed and _version_key(fixed) < _version_key(installed):
+        return None
+    return fixed
+
+
+def _version_check_commands(ecosystem: str | None, artifact: str, group: str | None) -> list[str]:
+    """Commands that reveal the installed version (for UNKNOWN applicability)."""
+    if ecosystem == "java":
+        coord = f"{group}:{artifact}" if group else artifact
+        return [f"mvn dependency:tree -Dincludes={coord}"]
+    if ecosystem == "npm":
+        return [f"npm ls {artifact}"]
+    if ecosystem == "python":
+        return [f"python -m pip show {artifact}"]
+    if ecosystem == "go":
+        return [f"go list -m {group or artifact}"]
+    if ecosystem == "rust":
+        return [f"cargo tree -i {artifact}"]
+    if ecosystem == "ruby":
+        return [f"bundle list | grep {artifact}"]
+    if ecosystem == "php":
+        return [f"composer show {artifact}"]
+    return [f"# Determine the installed version of {artifact} (package manager query)"]
+
+
 def _executive_summary(cve_id, cvss, severity, product, is_kev, fixed_version=None):
     parts = [
         f"{cve_id} ({product}) — CVSS {cvss} ({severity}).",
@@ -601,13 +636,13 @@ def generate_remediation(
     dependency_path = list(ctx["path"]) if ctx.get("path") else None
 
     if ecosystem and ecosystem in _ECOSYSTEM_LABELS:
-        cmds = _ecosystem_patch(ecosystem, artifact, group, installed, fixed, cve_id)
+        upgrade_cmds = _ecosystem_patch(ecosystem, artifact, group, installed, fixed, cve_id)
         verification_steps = _ecosystem_verification(ecosystem, artifact, group, cve_id)
         file_change = _ecosystem_file_change(ecosystem, artifact, group, installed, fixed, manifest)
         transitive = _transitive_explanation(ctx, artifact)
         compat = _compatibility_warning(installed, fixed)
     else:
-        cmds = _patch_commands(facts["product"], facts["vendor"], fixed, cve_id)
+        upgrade_cmds = _patch_commands(facts["product"], facts["vendor"], fixed, cve_id)
         verification_steps = [
             "# Check the installed version:",
             "#   - For container images: trivy image <image:tag> | grep -i " + cve_id.lower(),
@@ -618,37 +653,127 @@ def generate_remediation(
         transitive = None
         compat = None
 
+    safe_fixed = _safe_upgrade_target(installed, fixed)
+
     if applicable is False:
         ranges_str = ", ".join(facts["affected_versions"]) or "all versions"
         recommended = (
-            f"Installed version {installed} is outside the affected ranges "
-            f"({ranges_str}) — no upgrade is required for {cve_id}."
+            f"NOT APPLICABLE — installed version {installed} is outside the affected ranges "
+            f"({ranges_str}). No remediation required for {cve_id}."
         )
-    elif fixed:
-        if ecosystem == "java":
-            recommended = (
-                f"Upgrade {artifact} to {fixed} or later (Maven dependency — update the <version> in pom.xml)."
-            )
-        elif ecosystem == "npm":
-            recommended = f"Upgrade {artifact} to {fixed} or later (npm package)."
-        else:
-            recommended = f"Upgrade {artifact} to {fixed} or later."
-    else:
+        cmds: list[str] = []
+        file_change = None
+        steps: list[str] = [
+            f"1. Installed version {installed} is not inside any affected range for {cve_id}.",
+            "2. No upgrade is required. Keep the installed version and the regular patch cadence.",
+        ]
+        summary = (
+            f"{cve_id} ({artifact}) is NOT APPLICABLE to the installed version {installed} — "
+            "it falls outside every authoritative affected range. No remediation required."
+        )
+        root_cause = (
+            f"The vulnerability in {artifact} affects a version range that does not include "
+            f"the installed version {installed}."
+        )
+    elif applicable is None:
+        reason = (
+            "Resolved dependency version could not be determined."
+            if not installed
+            else "No authoritative affected range could be matched in the local index."
+        )
         recommended = (
-            f"No fixed version published for {cve_id} yet — apply the vendor "
-            "advisory mitigation and monitor for a patched release."
+            f"VERIFICATION REQUIRED — {reason} Provide the installed version of {artifact} to "
+            f"determine whether {cve_id} applies."
         )
+        cmds = _version_check_commands(ecosystem, artifact, group)
+        verification_steps = list(cmds) + [
+            f"Rerun 'depwolf remediate {cve_id}' with the installed version to confirm applicability."
+        ]
+        steps = [
+            f"1. {reason}",
+            "2. Run the version-check command below to find the installed version.",
+            "3. Rerun depwolf with that version to get a confirmed YES/NO verdict.",
+            "4. Do NOT treat this CVE as confirmed vulnerable until the version is known.",
+        ]
+        file_change = None
+        summary = (
+            f"{cve_id} ({artifact}) cannot be confirmed as actionable — the installed version "
+            "is unknown. Verification required before any patch is applied."
+        )
+        root_cause = f"Unable to determine the installed version of {artifact}; applicability is UNKNOWN."
+    else:
+        if not fixed:
+            recommended = (
+                f"No fixed version published for {cve_id} yet — apply the vendor "
+                "advisory mitigation and monitor for a patched release."
+            )
+            cmds = upgrade_cmds
+            steps = _step_by_step(cve_id, is_kev, facts["cvss_score"], artifact, None)
+            summary = _executive_summary(
+                cve_id,
+                facts["cvss_score"],
+                facts["cvss_severity"],
+                facts["product"],
+                is_kev,
+                None,
+            )
+            root_cause = _root_cause(facts["description"], artifact)
+        elif not safe_fixed:
+            recommended = (
+                f"Installed version {installed} is affected but is already newer than the "
+                f"published fixed version ({fixed}). No safe upgrade target exists in the local "
+                "index — apply the vendor advisory mitigation and monitor for a patched release."
+            )
+            cmds = [
+                "# Installed version is newer than the index's fixed version — no upgrade target.",
+                "# Apply the vendor advisory mitigation for " + cve_id + ".",
+            ]
+            file_change = None
+            steps = [
+                "1. The installed version is affected but no safe patched release is available.",
+                "2. Apply the vendor advisory mitigation as an interim control.",
+                "3. Monitor the vendor for a patched release and upgrade when available.",
+            ]
+            summary = _executive_summary(
+                cve_id,
+                facts["cvss_score"],
+                facts["cvss_severity"],
+                facts["product"],
+                is_kev,
+                fixed,
+            )
+            root_cause = _root_cause(facts["description"], artifact)
+        else:
+            fixed = safe_fixed
+            cmds = upgrade_cmds
+            steps = _step_by_step(cve_id, is_kev, facts["cvss_score"], artifact, fixed)
+            summary = _executive_summary(
+                cve_id,
+                facts["cvss_score"],
+                facts["cvss_severity"],
+                facts["product"],
+                is_kev,
+                fixed,
+            )
+            root_cause = _root_cause(facts["description"], artifact)
+            if ecosystem == "java":
+                recommended = (
+                    f"Upgrade {artifact} to {fixed} or later (Maven dependency — update the <version> in pom.xml)."
+                )
+            elif ecosystem == "npm":
+                recommended = f"Upgrade {artifact} to {fixed} or later (npm package)."
+            else:
+                recommended = f"Upgrade {artifact} to {fixed} or later."
 
-    summary = _executive_summary(
-        cve_id,
-        facts["cvss_score"],
-        facts["cvss_severity"],
-        facts["product"],
-        is_kev,
-        fixed,
-    )
     ai = _ai_narrative(cve_id, facts, ctx)
-    verification = (ai or {}).get("verification") or "; ".join(verification_steps)
+    if ai:
+        summary = ai.get("executive_summary") or summary
+        root_cause = ai.get("root_cause") or root_cause
+        if applicable is True and safe_fixed:
+            steps = ai.get("step_by_step_fix") or steps
+        verification = ai.get("verification") or "; ".join(verification_steps)
+    else:
+        verification = "; ".join(verification_steps)
 
     return {
         "cve_id": cve_id,
@@ -681,12 +806,11 @@ def generate_remediation(
         "manifest": manifest,
         "patch_commands": cmds,
         "file_change": file_change,
-        "compatibility_warning": compat,
+        "compatibility_warning": compat if applicable is True else None,
         "transitive_explanation": transitive,
-        "step_by_step_fix": (ai or {}).get("step_by_step_fix")
-        or _step_by_step(cve_id, is_kev, facts["cvss_score"], artifact, fixed),
-        "executive_summary": (ai or {}).get("executive_summary") or summary,
-        "root_cause": (ai or {}).get("root_cause") or _root_cause(facts["description"], artifact),
+        "step_by_step_fix": steps,
+        "executive_summary": summary,
+        "root_cause": root_cause,
         "verification": verification,
         "remediation_source": "ai" if ai else "template",
     }

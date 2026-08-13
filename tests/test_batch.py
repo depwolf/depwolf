@@ -42,12 +42,16 @@ def test_backfill_adds_non_stack_cves(memory_index_store):
     plan = match_plan("log4j 2.14.0", store=memory_index_store)
     result = prioritize_cves(
         ["CVE-2021-44228", "CVE-2021-45046"],
-        "log4j",
+        "log4j 2.14.0",
         store=memory_index_store,
         plan=plan,
     )
     found = {f["cve_id"] for f in result["prioritized"]}
-    assert found == {"CVE-2021-44228", "CVE-2021-45046"}
+    # 2.14.0 is inside [2.0, 2.15.0) -> CVE-2021-44228 confirmed; 2.14.0 is
+    # below CVE-2021-45046's affected range (>= 2.15.0) -> filtered.
+    assert found == {"CVE-2021-44228"}
+    reasons = {f["cve_id"]: f["reason"] for f in result.get("filtered_details", [])}
+    assert reasons.get("CVE-2021-45046") == "not_in_stack"
 
 
 def test_match_plan_full_returns_exact_confidence(memory_index_store):

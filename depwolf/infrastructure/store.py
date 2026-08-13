@@ -8,6 +8,7 @@ never sees ``sqlite3``.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -21,6 +22,14 @@ IGNORED_TABLE = """
 CREATE TABLE IF NOT EXISTS ignored_cves (
     cve_id TEXT PRIMARY KEY,
     ignored_at TEXT
+)
+"""
+
+SCAN_STATE_TABLE = """
+CREATE TABLE IF NOT EXISTS scan_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    saved_at TEXT,
+    deps_json TEXT
 )
 """
 
@@ -236,6 +245,46 @@ class SqliteIndexStore:
     def _ensure_ignored(db: sqlite3.Connection) -> None:
         db.execute(IGNORED_TABLE)
         db.commit()
+
+    # ---- scan-state persistence ----------------------------------------
+    # The latest manifest-scan's resolved dependencies are persisted so a later
+    # standalone `depwolf remediate <CVE>` uses the exact same canonical version
+    # data the scan resolved — no second version resolver, no drift.
+
+    def save_scan_deps(self, deps: list[dict]) -> None:
+        """Persist the resolved dependency list of the latest manifest scan."""
+        db = self.open()
+        try:
+            db.execute(SCAN_STATE_TABLE)
+            db.execute(
+                "DELETE FROM scan_state WHERE id = 1",
+            )
+            db.execute(
+                "INSERT INTO scan_state (id, saved_at, deps_json) VALUES (1, ?, ?)",
+                (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    json.dumps(deps, default=str),
+                ),
+            )
+            db.commit()
+        finally:
+            self.close(db)
+
+    def load_scan_deps(self) -> list[dict]:
+        """The dependency list of the most recent manifest scan (or [])."""
+        db = self.open()
+        try:
+            db.execute(SCAN_STATE_TABLE)
+            row = db.execute("SELECT deps_json FROM scan_state WHERE id = 1").fetchone()
+            if not row:
+                return []
+            try:
+                out = json.loads(row["deps_json"])
+            except (TypeError, ValueError):
+                return []
+            return out if isinstance(out, list) else []
+        finally:
+            self.close(db)
 
 
 def _row_to_range(r) -> VulnRange:

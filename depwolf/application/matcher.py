@@ -52,7 +52,7 @@ def parse_stack(text: str) -> list[dict]:
             continue
         if re.match(r"^os\s*[:=]\s*\w+$", line, re.IGNORECASE):
             continue
-        m = re.match(r"^([a-zA-Z0-9._+-]+(?:\s+[a-zA-Z0-9._+-]+)*)\s+([0-9][0-9a-zA-Z._+:-]*)$", line)
+        m = re.match(r"^([-a-zA-Z0-9._+@/]+(?:\s+[-a-zA-Z0-9._+@/]+)*)\s+([0-9][0-9a-zA-Z._+:-]*)$", line)
         if m:
             items.append({"product": m.group(1).strip(), "version": m.group(2).strip()})
         else:
@@ -62,6 +62,37 @@ def parse_stack(text: str) -> list[dict]:
 
 def _assets(stack_text: str | None) -> list[Asset]:
     return [Asset(product=a["product"], version=a["version"]) for a in parse_stack(stack_text or "")]
+
+
+def _enrich_asset_versions(assets: list[Asset], dep_index: dict | None) -> list[Asset]:
+    """Backfill versions the stack parser could not resolve from the manifest scan.
+
+    The stack text only carries a version when the parseable 'name version' line
+    matched; lockfile-resolved versions that the parser dropped (scoped names,
+    range specs, placeholders) are reattached here so the funnel's applicability
+    check sees the canonical installed version. ``dep_index`` maps a dep name
+    (or maven artifact / npm artifact) to the resolved manifest dependency.
+    """
+    if not dep_index:
+        return assets
+    out: list[Asset] = []
+    for asset in assets:
+        if asset.version is not None:
+            out.append(asset)
+            continue
+        dep = dep_index.get(asset.product) or dep_index.get(str(asset.product).split(":")[-1])
+        if dep and dep.get("version"):
+            out.append(Asset(product=asset.product, version=dep["version"]))
+        else:
+            out.append(asset)
+    return out
+
+
+def _canonical_dep(product: str, dep_index: dict | None) -> dict | None:
+    """The canonical manifest dependency for a matched stack product."""
+    if not dep_index:
+        return None
+    return dep_index.get(product) or dep_index.get(str(product).split(":")[-1])
 
 
 def extract_os(text: str) -> str | None:
@@ -207,6 +238,7 @@ def _build_entry(
     risk: RiskResult,
     ref: CVEReference,
     policy: Policy,
+    dep_index: dict | None = None,
 ) -> tuple[dict, list[VulnRange]]:
     best = ctx.rows[0]
     for r in ctx.rows:
@@ -239,12 +271,29 @@ def _build_entry(
         affected_assets=[Asset(a.product, a.version) for a in matched_assets],
         description=row.description or "",
     )
+    deps: list[Dependency] = []
+    for a in matched_assets:
+        dep = _canonical_dep(a.product, dep_index)
+        deps.append(
+            Dependency(
+                name=a.product,
+                version=dep.get("version") if dep and dep.get("version") else a.version,
+                ecosystem=str(dep.get("ecosystem") or "unknown") if dep else "unknown",
+                source=str(dep.get("manifest") or "stack") if dep else "stack",
+                group=dep.get("group") if dep else None,
+                manifest=dep.get("manifest") if dep else None,
+                direct=dep.get("direct") if dep else None,
+                path=tuple(dep["path"]) if dep and dep.get("path") else None,
+                version_confidence=dep.get("version_confidence") if dep else ("EXACT" if a.version else "UNKNOWN"),
+                version_source=dep.get("version_source")
+                if dep
+                else ("dependency_tree" if a.version else "unavailable"),
+            )
+        )
     finding = Finding(
         cve=ref,
         matched=True,
-        affected_assets=[
-            Dependency(name=a.product, version=a.version, ecosystem="unknown", source="stack") for a in matched_assets
-        ],
+        affected_assets=deps,
         enrichment=enrichment,
         risk=RiskAssessment(
             score=risk.score,
@@ -262,6 +311,14 @@ def _build_entry(
     entry["published_date"] = row.published_date
     if ctx.match_confidence:
         entry["match_confidence"] = ctx.match_confidence
+    # Every finding that reaches this point passed the applicability check:
+    # the installed version is known and falls inside an authoritative range.
+    entry["applicable"] = "YES"
+    entry["applicability_note"] = None
+    entry["ecosystem"] = deps[0].ecosystem if deps else "unknown"
+    entry["package"] = deps[0].name if deps else entry.get("pkg")
+    if deps and deps[0].manifest:
+        entry["manifest"] = deps[0].manifest
     return entry, list(ctx.rows)
 
 
@@ -274,9 +331,10 @@ def prioritize_cves(
     policy: Policy | None = None,
     plan: dict[str, list[VulnRange]] | None = None,
     plan_conf: dict[str, str] | None = None,
+    deps_index: dict | None = None,
 ) -> dict:
     repo = _repo(store)
-    assets = _assets(stack_text)
+    assets = _enrich_asset_versions(_assets(stack_text), deps_index)
     if os_filter is None:
         os_filter = extract_os(stack_text) if stack_text else None
     ignored = repo.all_ignored()
@@ -329,7 +387,7 @@ def prioritize_cves(
         if risk is None:
             continue
         ref = ref_by_id.get(cve_id) or CVEReference(cve_id=cve_id)
-        entry, ranges = _build_entry(ctx, risk, ref, policy)
+        entry, ranges = _build_entry(ctx, risk, ref, policy, dep_index=deps_index)
         prioritized.append(entry)
         ranges_by_cve[cve_id] = ranges
 
@@ -337,7 +395,11 @@ def prioritize_cves(
     filtered_count = len(filtered_out)
     ignored_count = sum(1 for x in filtered_out if x["reason"] == "ignored")
     reason_counts = _filter_breakdown(filtered_out)
-    not_applicable = sum(reason_counts.get(r, 0) for r in ("invalid_id", "not_found", "os_mismatch", "not_in_stack"))
+    needs_verification = reason_counts.get("unresolved_version", 0)
+    not_applicable = sum(
+        reason_counts.get(r, 0)
+        for r in ("invalid_id", "not_found", "os_mismatch", "not_in_stack", "unresolved_version")
+    )
     risk_suppressed = reason_counts.get("low_risk", 0)
     total = len(cve_ids)
     reduction_rate = round(filtered_count / total * 100, 1) if total else 0.0
@@ -349,6 +411,7 @@ def prioritize_cves(
         "actionable": len(prioritized),
         "filtered_out": filtered_count,
         "not_applicable": not_applicable,
+        "needs_verification": needs_verification,
         "risk_suppressed": risk_suppressed,
         "ignored_count": ignored_count,
         "reduction_rate": reduction_rate,

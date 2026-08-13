@@ -96,12 +96,16 @@ def test_remediate_table_default_prints_table_and_gate(tmp_path, monkeypatch, ca
     monkeypatch.setattr(cli, "DB_PATH", db_path)
     monkeypatch.setattr("depwolf.infrastructure.store.DB_PATH", db_path)
 
+    # No saved scan state: applicability is UNKNOWN -> verification required,
+    # never a confirmed finding, so the CI gate passes (rc 0).
     rc = cli._remediate(["CVE-2021-44228"], 60)
-    assert rc == 1
+    assert rc == 0
     out, err = capsys.readouterr()
     assert "DEPWOLF — remediation" in out
     assert "CVE-2021-44228" in out
+    assert "VERIFICATION REQUIRED" in out
     assert "[gate]" in err
+    assert "no confirmed findings" in err
 
 
 def test_remediate_json_format_still_structured(tmp_path, monkeypatch, capsys):
@@ -114,7 +118,8 @@ def test_remediate_json_format_still_structured(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("depwolf.infrastructure.store.DB_PATH", db_path)
 
     rc = cli._remediate(["CVE-2021-44228"], 60, fmt="json")
-    assert rc == 1
+    assert rc == 0
     out, _err = capsys.readouterr()
     data = json.loads(out)
     assert data["remediation"][0]["fixed_version"] == "2.15.0"
+    assert data["remediation"][0]["applicable"] == "UNKNOWN"

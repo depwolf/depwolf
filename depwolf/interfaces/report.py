@@ -203,6 +203,7 @@ def render_table(result: dict) -> str:
     summary = (
         f" candidates: {total}   actionable: {result.get('actionable', result.get('found'))}   "
         f"not_applicable: {result.get('not_applicable')}   "
+        f"needs_verification: {result.get('needs_verification', 0)}   "
         f"risk_suppressed: {result.get('risk_suppressed')}\n"
         f" reduction: {reduction}%   (not_applicable: {na_rate}% · legacy fp-rate: "
         f"{result.get('false_positive_rate')}%)"
