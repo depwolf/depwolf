@@ -118,11 +118,13 @@ def test_render_remediation_table_overview_and_cards():
     assert "\x1b[" not in out
 
 
-def test_render_remediation_table_applicable_mapping():
+def test_render_remediation_table_no_applicable_column():
     yes = dict(_REMED, applicable=True)
     no = dict(_REMED, applicable=False)
     out = render_remediation_table([yes, no])
-    assert "yes" in out and "no" in out
+    assert "Applicable" not in out
+    assert render_remediation_table([yes]) == render_remediation_table([no])
+    assert "CVE-2021-39144" in out
 
 
 def test_render_remediation_table_no_threshold_banner():

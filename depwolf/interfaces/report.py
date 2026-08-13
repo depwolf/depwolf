@@ -257,7 +257,7 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
     )
     lines.extend(_banner(" DEPWOLF — remediation", summary, color))
 
-    headers = ["CVE", "Package", "Ecosystem", "Severity", "Risk", "Fixed", "Applicable", "Priority", "Source"]
+    headers = ["CVE", "Package", "Ecosystem", "Severity", "Risk", "Fixed", "Priority", "Source"]
     rows: list[list[str]] = []
     for e in found:
         rows.append(
@@ -268,12 +268,11 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
                 str(e.get("severity") or "?"),
                 str(e.get("risk_score")),
                 str(e.get("fixed_version") or e.get("minimum_safe_version") or "-"),
-                {True: "yes", False: "no", None: "?"}.get(e.get("applicable"), "?"),
                 str(e.get("patch_priority") or "-"),
                 str(e.get("remediation_source") or "-"),
             ]
         )
-    maxw = [17, 22, 10, 10, 7, 12, 11, 12, 9]
+    maxw = [17, 22, 10, 10, 7, 12, 12, 9]
     lines.extend(_table(headers, rows, color, _color_style if color else None, maxw))
 
     for e in entries:
