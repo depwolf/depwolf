@@ -30,7 +30,12 @@ from depwolf.application.matcher import ignore_cve, prioritize_cves, unignore_cv
 from depwolf.application.remediation import generate_remediation, verify_fix
 from depwolf.domain.model import CVEReference
 from depwolf.infrastructure.cpe_index import DB_PATH
-from depwolf.interfaces.report import build_json_report, build_sarif, render_table
+from depwolf.interfaces.report import (
+    build_json_report,
+    build_sarif,
+    render_remediation_table,
+    render_table,
+)
 
 _REPORT_EXTS = (".json", ".txt", ".sarif")
 _SKIP_DIRS = {
@@ -321,16 +326,24 @@ def _emit(result: dict, threshold: int, fmt: str, save_path: str | None = None) 
     return 0
 
 
-def _remediate(cves: list[str], threshold: int) -> int:
+def _remediate(cves: list[str], threshold: int, fmt: str = "table") -> int:
     if not _require_db():
         return 2
     results = []
     for cve in cves:
         results.append(generate_remediation(cve))
-    out = build_json_report({"remediation": results})
-    print(json.dumps(out, indent=2, default=str))
+    if fmt == "table":
+        print(render_remediation_table(results, threshold))
+    else:
+        out = build_json_report({"remediation": results})
+        print(json.dumps(out, indent=2, default=str))
     found = [r for r in results if r.get("found") and (r.get("risk_score") or 0) >= threshold]
-    return 1 if found else 0
+    if found:
+        gate = f"[gate] {len(found)} remediated finding(s) at/above risk threshold {threshold} — remediate"
+        print(gate, file=sys.stderr)
+        return 1
+    print(f"[gate] no findings at/above risk threshold {threshold} — PASS", file=sys.stderr)
+    return 0
 
 
 def _verify(cves: list[str], version: str | None) -> int:
@@ -450,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("remediate", help="remediation for CVE IDs (any scan output can be reduced to CVE IDs)")
     r.add_argument("cves", nargs="+")
     r.add_argument("--threshold", type=int, default=60)
+    r.add_argument("--format", choices=["json", "table"], default="table", help="output format (default: table)")
 
     v = sub.add_parser(
         "verify",
@@ -487,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         return _scan(args.inputs, args.os, args.threshold, not args.no_remediate, args.format, args.save, args.stack)
     if args.command == "remediate":
-        return _remediate(args.cves, args.threshold)
+        return _remediate(args.cves, args.threshold, args.format)
     if args.command == "verify":
         return _verify(args.cves, args.version)
     if args.command == "sync":

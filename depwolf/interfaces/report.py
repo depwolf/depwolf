@@ -119,14 +119,16 @@ def _table(
     rows: list[list[str]],
     color: bool,
     style: Callable[[int, str, str], str] | None = None,
+    maxw: list[int] | None = None,
 ) -> list[str]:
     n = len(headers)
     widths = [max(len(h), 1) for h in headers]
     for r in rows:
         for i, cell in enumerate(r):
             widths[i] = max(widths[i], len(cell))
+    caps = maxw if maxw is not None else _MAXW
     for i in range(n):
-        widths[i] = min(widths[i], _MAXW[i] if i < len(_MAXW) else 16)
+        widths[i] = min(widths[i], caps[i] if i < len(caps) else 16)
 
     def line(tl: str, join: str, br: str) -> str:
         inner = _BOX[join].join(f"{_BOX['h'] * (w + 2)}" for w in widths)
@@ -154,10 +156,44 @@ def _table(
     return out
 
 
+def _color_style(i: int, padded: str, raw: str) -> str:
+    if i == 3:
+        return _color(padded, _SEV_COLOR.get(raw, "0"))
+    if i == 4:
+        try:
+            risk = float(raw)
+        except (TypeError, ValueError):
+            return padded
+        return _color(padded, "91;1" if risk >= 80 else ("93" if risk >= 60 else "0"))
+    return padded
+
+
+def _banner(title: str, summary: str, color: bool) -> list[str]:
+    lines = [title, *summary.splitlines()]
+    w = max((len(x) for x in lines), default=0) + 1
+    top = "╔" + "═" * (w + 2) + "╗"
+    out = [_color(top, "1;36") if color else top]
+    for x in lines:
+        text = _color("║" + x.ljust(w + 2) + "║", "1;36") if color else "║" + x.ljust(w + 2) + "║"
+        out.append(text)
+    out.append(_color("╚" + "═" * (w + 2) + "╝", "1;36") if color else "╚" + "═" * (w + 2) + "╝")
+    return out
+
+
+def _notch_box(title: str, body: list[str], color: bool) -> list[str]:
+    w = max([24, len(title) + 6, *(len(b) + 4 for b in body)])
+    out = ["╭" + "── " + title + " " + "─" * (w - len(title) - 6) + "╮"]
+    for b in body:
+        out.append("│ " + b.ljust(w - 4) + " │")
+    out.append("╰" + "─" * (w - 2) + "╯")
+    if color:
+        out[0] = _color(out[0], "1")
+    return out
+
+
 def render_table(result: dict) -> str:
     import os
     import sys
-    from collections import Counter
 
     color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     lines: list[str] = []
@@ -171,15 +207,7 @@ def render_table(result: dict) -> str:
         f" reduction: {reduction}%   (not_applicable: {na_rate}% · legacy fp-rate: "
         f"{result.get('false_positive_rate')}%)"
     )
-    w = max(len(summary.splitlines()[0]), len(summary.splitlines()[1]), 44) + 1
-    top = "╔" + "═" * (w + 2) + "╗"
-    title = " DEPWOLF — prioritized findings".ljust(w + 2)
-    lines.append(_color(top, "1;36") if color else top)
-    lines.append(_color("║" + title + "║", "1;36") if color else "║" + title + "║")
-    for row in summary.splitlines():
-        pad = " " + row.ljust(w + 1)
-        lines.append("║" + pad + "║")
-    lines.append("╚" + "═" * (w + 2) + "╝")
+    lines.extend(_banner(" DEPWOLF — prioritized findings", summary, color))
 
     headers = ["CVE", "Package", "Version", "Severity", "Risk", "Fixed", "Priority", "Confidence"]
     rows: list[list[str]] = []
@@ -194,21 +222,12 @@ def render_table(result: dict) -> str:
         conf = f.get("match_confidence") or "-"
         rows.append([str(f.get("cve_id", "?")), str(pkg), str(ver), sev, risk, str(fixed), str(pp), str(conf)])
 
-    def _style(i: int, padded: str, raw: str) -> str:
-        if i == 3:
-            return _color(padded, _SEV_COLOR.get(raw, "0"))
-        if i == 4:
-            try:
-                risk = float(raw)
-            except (TypeError, ValueError):
-                return padded
-            return _color(padded, "91;1" if risk >= 80 else ("93" if risk >= 60 else "0"))
-        return padded
-
-    t = _table(headers, rows, color, _style if color else None)
+    t = _table(headers, rows, color, _color_style if color else None)
     lines.extend(t)
 
     if result.get("filtered_details"):
+        from collections import Counter
+
         reasons = Counter(d.get("reason") for d in result["filtered_details"])
         foot = "Filtered: " + "  ·  ".join(f"{n}x {reason}" for reason, n in reasons.most_common())
         width = max(min(max(len(x) for x in t), 72), len(foot), 44)
@@ -216,4 +235,67 @@ def render_table(result: dict) -> str:
         lines.append("┌" + "─" * (width + 2) + "┐")
         lines.append("│ " + foot.ljust(width) + " │")
         lines.append("└" + "─" * (width + 2) + "┘")
+    return "\n".join(lines)
+
+
+def render_remediation_table(entries: list[dict], threshold: int | None = None) -> str:
+    """Human table + per-CVE command cards for `depwolf remediate` output."""
+    import os
+    import sys
+
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    lines: list[str] = []
+    found = [e for e in entries if e.get("found")]
+    notfound = [e for e in entries if not e.get("found")]
+    srcs = sorted({str(e.get("remediation_source")) for e in found})
+    kev = sum(1 for e in found if e.get("kev"))
+    over = sum(1 for e in found if (e.get("risk_score") or 0) >= (threshold or 0)) if threshold else None
+    summary = (
+        f" remediating: {len(entries)} CVE(s)   found: {len(found)}   not in index: {len(notfound)}   "
+        f"KEV: {kev}\n source: {', '.join(srcs) or '-'}"
+        + (f"   at/above threshold {threshold}: {over}" if over is not None else "")
+    )
+    lines.extend(_banner(" DEPWOLF — remediation", summary, color))
+
+    headers = ["CVE", "Package", "Ecosystem", "Severity", "Risk", "Fixed", "Applicable", "Priority", "Source"]
+    rows: list[list[str]] = []
+    for e in found:
+        rows.append(
+            [
+                str(e.get("cve_id", "?")),
+                str(e.get("package") or e.get("product") or "-"),
+                str(e.get("ecosystem") or "-"),
+                str(e.get("severity") or "?"),
+                str(e.get("risk_score")),
+                str(e.get("fixed_version") or e.get("minimum_safe_version") or "-"),
+                {True: "yes", False: "no", None: "?"}.get(e.get("applicable"), "?"),
+                str(e.get("patch_priority") or "-"),
+                str(e.get("remediation_source") or "-"),
+            ]
+        )
+    maxw = [17, 22, 10, 10, 7, 12, 11, 12, 9]
+    lines.extend(_table(headers, rows, color, _color_style if color else None, maxw))
+
+    for e in entries:
+        cve = str(e.get("cve_id", "?"))
+        if not e.get("found"):
+            lines.append("")
+            lines.extend(_notch_box(cve, [f"{cve} not found in local CVE index — cannot generate remediation."], color))
+            continue
+        pkg = str(e.get("package") or e.get("product") or "-")
+        ec = e.get("ecosystem")
+        title = f"{cve} · {pkg}" + (f" · {ec}" if ec else "")
+        body: list[str] = []
+        rec = e.get("recommended_action")
+        if rec:
+            body.append(f"fix    {rec}")
+        for cmd in e.get("patch_commands") or []:
+            body.append(f"patch  {cmd}")
+        for step in e.get("step_by_step_fix") or []:
+            body.append(f"step   {step}")
+        ver = e.get("verification") or ""
+        for step in (s.strip() for s in ver.split("; ") if s.strip()):
+            body.append(f"verify {step}")
+        lines.append("")
+        lines.extend(_notch_box(title, body, color))
     return "\n".join(lines)

@@ -85,3 +85,36 @@ def test_require_db_rejects_empty_index_without_network(tmp_path, monkeypatch, c
     assert _require_db() is False
     err = capsys.readouterr().err
     assert "no usable index" in err
+
+
+def test_remediate_table_default_prints_table_and_gate(tmp_path, monkeypatch, capsys):
+    import depwolf.interfaces.cli as cli
+    from tests.conftest import _build_file_index
+
+    db_path = tmp_path / "cpe_index.db"
+    _build_file_index(db_path)
+    monkeypatch.setattr(cli, "DB_PATH", db_path)
+    monkeypatch.setattr("depwolf.infrastructure.store.DB_PATH", db_path)
+
+    rc = cli._remediate(["CVE-2021-44228"], 60)
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "DEPWOLF — remediation" in out
+    assert "CVE-2021-44228" in out
+    assert "[gate]" in err
+
+
+def test_remediate_json_format_still_structured(tmp_path, monkeypatch, capsys):
+    import depwolf.interfaces.cli as cli
+    from tests.conftest import _build_file_index
+
+    db_path = tmp_path / "cpe_index.db"
+    _build_file_index(db_path)
+    monkeypatch.setattr(cli, "DB_PATH", db_path)
+    monkeypatch.setattr("depwolf.infrastructure.store.DB_PATH", db_path)
+
+    rc = cli._remediate(["CVE-2021-44228"], 60, fmt="json")
+    assert rc == 1
+    out, _err = capsys.readouterr()
+    data = json.loads(out)
+    assert data["remediation"][0]["fixed_version"] == "2.15.0"

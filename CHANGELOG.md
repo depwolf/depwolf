@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.6] - 2026-08-13
 
 ### Added
+- Box-drawn, auto-width report tables: `depwolf scan --format table` and
+  `depwolf export --format table` now render a bordered summary banner,
+  a truncating column table, and a filtered-breakdown footer (no more fixed
+  100-char padded grid). On a real TTY the severity and risk columns are
+  colored (Risk ≥ 80 red, ≥ 60 yellow); piped output stays deterministic.
+- `depwolf remediate` now defaults to a beautiful table (`--format table`):
+  an overview table (CVE, package, ecosystem, severity, risk, fixed,
+  applicable, priority, source) plus one command card per CVE with the
+  recommended fix, patch commands, remediation steps, and verification.
+  `depwolf remediate --format json` preserves the old structured output.
 - Standalone `depwolf remediate <CVE>` now infers the ecosystem of well-known
   library products (xstream, log4j, jackson-databind, jquery, axios, flask,
   django, rails, ...) so it emits real Maven/npm/pip/Bundler commands instead of

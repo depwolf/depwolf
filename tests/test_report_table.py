@@ -3,7 +3,7 @@
 import sys
 from unittest import mock
 
-from depwolf.interfaces.report import render_table
+from depwolf.interfaces.report import render_remediation_table, render_table
 
 _RESULT = {
     "total_scanned": 148,
@@ -76,3 +76,55 @@ def test_render_table_colors_only_on_tty():
     rows = lines[top : bot + 1]
     widths = {len(ln) for ln in rows}
     assert len(widths) == 1, f"misaligned table rows: {widths}"
+
+
+_REMED = {
+    "cve_id": "CVE-2021-39144",
+    "found": True,
+    "package": "com.thoughtworks.xstream:xstream",
+    "product": "xstream",
+    "ecosystem": "java",
+    "severity": "High",
+    "risk_score": 93.7,
+    "fixed_version": "1.4.18",
+    "minimum_safe_version": "1.4.18",
+    "applicable": None,
+    "patch_priority": "Immediate",
+    "remediation_source": "template",
+    "kev": True,
+    "recommended_action": "Upgrade com.thoughtworks.xstream:xstream to 1.4.18 or later.",
+    "patch_commands": [
+        "mvn versions:use-dep-version -Dincludes=com.thoughtworks.xstream:xstream -DdepVersion=1.4.18",
+        "mvn dependency:tree -Dincludes=com.thoughtworks.xstream:xstream",
+    ],
+    "verification": "mvn dependency:tree -Dincludes=com.thoughtworks.xstream:xstream; "
+    "Rerun 'depwolf scan .' and confirm CVE-2021-39144 no longer appears.",
+    "step_by_step_fix": ["1. Upgrade the dependency", "2. Rerun the scan"],
+}
+
+_REMED_NOT_FOUND = {"cve_id": "CVE-9999-0000", "found": False}
+
+
+def test_render_remediation_table_overview_and_cards():
+    out = render_remediation_table([_REMED, _REMED_NOT_FOUND], threshold=60)
+    assert "DEPWOLF — remediation" in out
+    assert "remediating: 2 CVE(s)" in out
+    assert "at/above threshold 60: 1" in out
+    assert "CVE-2021-39144" in out
+    assert "╭── CVE-2021-39144 · com.thoughtworks.xstream:xstream · java" in out
+    assert "mvn versions:use-dep-version" in out
+    assert "verify mvn dependency:tree" in out
+    assert "CVE-9999-0000 not found in local CVE index" in out
+    assert "\x1b[" not in out
+
+
+def test_render_remediation_table_applicable_mapping():
+    yes = dict(_REMED, applicable=True)
+    no = dict(_REMED, applicable=False)
+    out = render_remediation_table([yes, no])
+    assert "yes" in out and "no" in out
+
+
+def test_render_remediation_table_no_threshold_banner():
+    out = render_remediation_table([_REMED])
+    assert "at/above threshold" not in out
