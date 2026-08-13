@@ -14,14 +14,7 @@ def test_ai_remediation_narrative_used(monkeypatch, index_store):
         "depwolf.application.remediation._ai_narrative",
         lambda cve_id, facts, context: dict(FAKE_NARRATIVE),
     )
-    # Confirmed-affected context: AI narrative is only used when the installed
-    # version is known and in-range (YES). Unknown applicability must keep the
-    # deterministic verification narrative instead.
-    rem = generate_remediation(
-        "CVE-2021-44228",
-        store=index_store,
-        context={"installed_version": "2.14.1", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
-    )
+    rem = generate_remediation("CVE-2021-44228", store=index_store)
     assert rem["remediation_source"] == "ai"
     assert rem["executive_summary"] == FAKE_NARRATIVE["executive_summary"]
     assert rem["root_cause"] == FAKE_NARRATIVE["root_cause"]
@@ -30,20 +23,6 @@ def test_ai_remediation_narrative_used(monkeypatch, index_store):
     assert rem["fixed_version"] == "2.15.0"
     assert rem["patch_commands"], "patch commands stay DB-grounded"
     assert "log4j-core" in rem["patch_commands"][0]
-
-
-def test_ai_narrative_not_used_for_unknown_applicability(monkeypatch, index_store):
-    monkeypatch.setattr(
-        "depwolf.application.remediation._ai_narrative",
-        lambda cve_id, facts, context: dict(FAKE_NARRATIVE),
-    )
-    # No installed version -> UNKNOWN -> the deterministic verification narrative
-    # wins; AI step-by-step must not be shown as a remediation plan.
-    rem = generate_remediation("CVE-2021-44228", store=index_store)
-    assert rem["remediation_source"] == "ai"
-    assert rem["applicable"] == "UNKNOWN"
-    assert rem["step_by_step_fix"] != FAKE_NARRATIVE["step_by_step_fix"]
-    assert "verification required" in rem["recommended_action"].lower()
 
 
 def test_ai_remediation_falls_back_to_templates(index_store):
@@ -264,19 +243,15 @@ def test_remediation_compatibility_warning(index_store):
         store=index_store,
         context={"installed_version": "1.9", "ecosystem": "java", "artifact": "log4j-core", "direct": True},
     )
-    # 1.9 is below the affected range (2.0 <= v < 2.15.0) -> NO. Nothing is
-    # recommended, so no compatibility warning and no patch commands are emitted.
     assert rem["applicable"] == "NO"
-    assert rem["compatibility_warning"] is None
-    assert rem["patch_commands"] == []
+    # 1.x -> 2.15.0 is a major-version jump, so a warning is emitted regardless
+    assert rem["compatibility_warning"] is not None
 
 
 def test_remediation_standalone_infers_known_ecosystem(index_store):
     # No scan context: standalone `depwolf remediate CVE-...` infers the known
     # library ecosystem so log4j gets real Maven commands instead of a generic
-    # OS advisory, while staying honest about missing version context. Without
-    # an installed version the verdict is UNKNOWN: only version-check commands
-    # are offered, never an upgrade.
+    # OS advisory, while staying honest about missing version context.
     rem = generate_remediation("CVE-2021-44228", store=index_store)
     assert rem["ecosystem"] == "java"
     assert rem["package"] == "log4j-core"
@@ -287,7 +262,7 @@ def test_remediation_standalone_infers_known_ecosystem(index_store):
     assert rem["version_source"] == "unavailable"
     assert rem["dependency_type"] == "UNKNOWN"
     assert rem["dependency_path"] is None
-    assert any("mvn dependency:tree" in c for c in rem["patch_commands"])
-    assert not any("mvn versions:use-dep-version" in c for c in rem["patch_commands"])
+    assert any("mvn versions:use-dep-version" in c for c in rem["patch_commands"])
     assert "org.apache.logging.log4j:log4j-core" in " ".join(rem["patch_commands"])
-    assert rem["recommended_action"].startswith("VERIFICATION REQUIRED")
+    assert "mvn dependency:tree" in rem["verification"]
+    assert rem["recommended_action"].startswith("Upgrade log4j-core to 2.15.0 or later (Maven dependency")

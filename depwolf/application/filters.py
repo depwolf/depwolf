@@ -125,31 +125,10 @@ class NotInStackFilter:
         )
 
 
-class UnresolvedVersionFilter:
-    name = "unresolved_version"
-
-    def apply(self, ctx: FilterContext) -> None:
-        if not ctx.assets or not ctx.affected_assets:
-            return
-        versions = [a.version for a in ctx.assets if a.product in ctx.affected_assets and a.version]
-        if versions:
-            return
-        product = ctx.affected_assets[0]
-        ctx.reason = self.name
-        ctx.detail = (
-            f"Resolved dependency version could not be determined for {product} — "
-            "verification required. Provide a manifest/lockfile pin or the installed version."
-        )
-        ctx.risk_score = _best_risk(ctx)
-        ctx.severity = _severity_of(ctx)
-
-
 class LowRiskFilter:
     name = "low_risk"
 
     def apply(self, ctx: FilterContext) -> None:
-        if ctx.reason in ("unresolved_version",):
-            return
         ctx.risk_score = _best_risk(ctx)
         ctx.severity = _severity_of(ctx)
         if ctx.risk_score < 35:
@@ -164,6 +143,5 @@ def default_funnel_filters() -> list:
         OSMismatchFilter(),
         IgnoredFilter(),
         NotInStackFilter(),
-        UnresolvedVersionFilter(),
         LowRiskFilter(),
     ]
