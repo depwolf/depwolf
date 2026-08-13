@@ -17,7 +17,7 @@ import re
 
 from depwolf.application.filters import default_funnel_filters
 from depwolf.domain.funnel import FilterContext, Funnel
-from depwolf.domain.match import asset_matches, better_confidence, row_os
+from depwolf.domain.match import asset_applicability, better_confidence, row_os
 from depwolf.domain.model import (
     Asset,
     CVEReference,
@@ -61,7 +61,21 @@ def parse_stack(text: str) -> list[dict]:
 
 
 def _assets(stack_text: str | None) -> list[Asset]:
-    return [Asset(product=a["product"], version=a["version"]) for a in parse_stack(stack_text or "")]
+    """Parse the stack into one Asset per product, preferring a known version.
+
+    A product may legitimately appear once with a resolved version (lockfile)
+    and once without (manifest with a range spec such as ``^4.0.0``). The
+    versionless duplicate must not shadow the resolved version, otherwise the
+    funnel would evaluate the same package as UNKNOWN.
+    """
+    by_product: dict[str, Asset] = {}
+    for item in parse_stack(stack_text or ""):
+        product = item["product"]
+        version = item["version"]
+        existing = by_product.get(product)
+        if existing is None or (version and not existing.version):
+            by_product[product] = Asset(product=product, version=version)
+    return list(by_product.values())
 
 
 def extract_os(text: str) -> str | None:
@@ -262,6 +276,14 @@ def _build_entry(
     entry["published_date"] = row.published_date
     if ctx.match_confidence:
         entry["match_confidence"] = ctx.match_confidence
+    if not entry.get("installed_version"):
+        matched_version = next(
+            (a.version for a in ctx.assets if a.product in ctx.affected_assets and a.version),
+            None,
+        )
+        if matched_version:
+            entry["installed_version"] = matched_version
+            entry["asset_version"] = matched_version
     return entry, list(ctx.rows)
 
 
@@ -450,7 +472,7 @@ def check_cve(
     affected_assets = []
     if assets:
         for asset in assets:
-            if any(asset_matches(asset, r) for r in rows):
+            if any(asset_applicability(asset, r) is True for r in rows):
                 affects = True
                 affected_assets.append(asset.product)
     priority, sla = compute_priority_for(risk.score, kev, epss, cvss)

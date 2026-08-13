@@ -73,20 +73,35 @@ def fuzzy_product_match(norm: str, row_product: str) -> bool:
     return product_match_confidence(norm, row_product) is not None
 
 
-def asset_matches(asset: Asset, row: VulnRange) -> bool:
-    """Does a stack asset fall inside this vulnerable version range?"""
-    norm = _normalize(asset.product)
-    if not fuzzy_product_match(norm, row.product):
+def asset_applicability(asset: Asset, row: VulnRange) -> bool | None:
+    """YES/NO/UNKNOWN: does this stack asset fall inside the vulnerable range?
+
+    True  = product matches and the known installed version is inside the range.
+    False = product does not match this row, or the known version is outside
+            every affected range.
+    None  = the installed version could not be determined, so applicability
+            cannot be confirmed.
+    """
+    if not fuzzy_product_match(_normalize(asset.product), row.product):
         return False
-    if asset.version and not _version_in_range(
+    if not asset.version:
+        return None
+    return _version_in_range(
         asset.version,
         row.version_start_including,
         row.version_start_excluding,
         row.version_end_including,
         row.version_end_excluding,
-    ):
-        return False
-    return True
+    )
+
+
+def asset_matches(asset: Asset, row: VulnRange) -> bool:
+    """Strict gate: an asset matches only when its known version is in range.
+
+    An unresolved version is never treated as confirmed in-range (UNKNOWN stays
+    UNKNOWN — the caller must decide what to do with it).
+    """
+    return asset_applicability(asset, row) is True
 
 
 def row_os(row: VulnRange) -> str | None:

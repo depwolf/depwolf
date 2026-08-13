@@ -120,7 +120,7 @@ def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
     if not dep:
         return None
     return {
-        "installed_version": dep.get("version"),
+        "installed_version": dep.get("version") or entry.get("installed_version"),
         "ecosystem": dep.get("ecosystem"),
         "name": dep.get("name"),
         "group": dep.get("group"),

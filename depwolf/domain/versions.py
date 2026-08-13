@@ -66,6 +66,30 @@ def _version_in_range(version: str, start_incl, start_excl, end_incl, end_excl) 
     return True
 
 
+def version_applicability(version: str | None, ranges: list[tuple]) -> bool | None:
+    """Tri-state applicability of an installed version against affected ranges.
+
+    YES (True)   = the version is inside at least one affected range.
+    NO (False)   = the version is outside every affected range.
+    UNKNOWN (None) = the installed version could not be determined, or no
+    ranges were supplied.
+
+    A range with no version bounds means "all versions affected", so any known
+    version is inside it. This is the single authoritative gate shared by the
+    funnel and the remediation layer.
+    """
+    if not version:
+        return None
+    if not ranges:
+        return None
+    for bounds in ranges:
+        if not any(b is not None for b in bounds):
+            return True
+        if _version_in_range(version, *bounds):
+            return True
+    return False
+
+
 def format_range(start_incl, start_excl, end_incl, end_excl) -> str:
     """Human-readable version range, e.g. '>= 2.0, < 2.15.0'."""
     parts = []

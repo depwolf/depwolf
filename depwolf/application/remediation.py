@@ -17,7 +17,7 @@ from depwolf.domain.model import VulnRange
 from depwolf.domain.ports import CVERepository
 from depwolf.domain.priority import compute_patch_priority
 from depwolf.domain.risk import calculate_risk
-from depwolf.domain.versions import _version_in_range, _version_key
+from depwolf.domain.versions import _version_key, version_applicability
 from depwolf.infrastructure.store import SqliteIndexStore
 
 CWE_DESCRIPTIONS: dict[str, str] = {
@@ -74,22 +74,10 @@ def _installed_applicability(installed_version: str | None, ranges: list[tuple])
 
     None when there is no installed version to compare (unknown). A range with
     no version bounds means "all versions affected", so any installed version
-    is applicable (True).
+    is applicable (True). Delegates to the shared version-range engine so the
+    funnel, matcher, and remediation always agree.
     """
-    if not installed_version:
-        return None
-    if not ranges:
-        return None
-    bounded = False
-    for bounds in ranges:
-        if not any(b is not None for b in bounds):
-            return True
-        bounded = True
-        if _version_in_range(installed_version, *bounds):
-            return True
-    if not bounded:
-        return True
-    return False
+    return version_applicability(installed_version, ranges)
 
 
 def verify_fix(
