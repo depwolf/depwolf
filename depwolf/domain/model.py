@@ -27,17 +27,6 @@ class Dependency:
     manifest: str | None = None  # exact manifest path
     direct: bool | None = None  # True=direct, False=transitive, None=unknown
     path: tuple[str, ...] | None = None  # dependency path (top-down), when known
-    version_confidence: str | None = None  # EXACT | INFERRED | UNKNOWN
-    version_source: str | None = None  # manifest | lockfile | scanner_report | dependency_tree | inferred
-
-    @property
-    def dependency_type(self) -> str:
-        """DIRECT when explicitly declared, TRANSITIVE when pulled in, else UNKNOWN."""
-        if self.direct is True:
-            return "DIRECT"
-        if self.direct is False:
-            return "TRANSITIVE"
-        return "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -166,17 +155,6 @@ class Finding:
             "confidence": self.cve.confidence,
             "affected_assets": [a.name for a in self.affected_assets],
         }
-        if self.affected_assets:
-            dep = self.affected_assets[0]
-            if not e.get("installed_version") and dep.version:
-                e["installed_version"] = dep.version
-            if dep.version_confidence:
-                e["version_confidence"] = dep.version_confidence
-            if dep.version_source:
-                e["version_source"] = dep.version_source
-            e["dependency_type"] = dep.dependency_type
-            if dep.path:
-                e["dependency_path"] = list(dep.path)
         if self.enrichment:
             e["found"] = self.enrichment.found
             e["vendor"] = self.enrichment.vendor
