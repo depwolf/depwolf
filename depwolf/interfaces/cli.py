@@ -131,14 +131,14 @@ def _remediation_context(dep_index: dict, entry: dict) -> dict | None:
     }
 
 
-def _attach_remediation(entries: list[dict], dep_index: dict | None = None) -> None:
+def _attach_remediation(entries: list[dict], dep_index: dict | None = None, store=None) -> None:
     seen = set()
     for entry in entries:
         cve = entry.get("cve_id")
         if not cve or cve in seen:
             continue
         seen.add(cve)
-        rem = generate_remediation(cve, context=_remediation_context(dep_index or {}, entry))
+        rem = generate_remediation(cve, store=store, context=_remediation_context(dep_index or {}, entry))
         if rem.get("found"):
             entry["remediation_summary"] = rem.get("executive_summary")
             entry["root_cause"] = rem.get("root_cause")
@@ -164,6 +164,9 @@ def _attach_remediation(entries: list[dict], dep_index: dict | None = None) -> N
 def _require_db() -> bool:
     import sqlite3 as _sqlite3
 
+    if os.environ.get("AVIP_API_URL"):
+        return True
+
     if not DB_PATH.exists():
         from depwolf.infrastructure.cpe_index import download_index
 
@@ -175,7 +178,8 @@ def _require_db() -> bool:
             print(f"error: no CVE index found at {DB_PATH}", file=sys.stderr)
             print("hint: check your internet connection and retry,", file=sys.stderr)
             print("      or set AVIP_DB_URL to a prebuilt cpe_index.db URL,", file=sys.stderr)
-            print("      or set AVIP_DB_PATH to an existing cpe_index.db", file=sys.stderr)
+            print("      or set AVIP_DB_PATH to an existing cpe_index.db,", file=sys.stderr)
+            print("      or set AVIP_API_URL for cloud API mode (no local DB needed)", file=sys.stderr)
             return False
     try:
         db = _sqlite3.connect(str(DB_PATH))
@@ -204,10 +208,22 @@ def _require_db() -> bool:
     return True
 
 
+def _get_store():
+    """Return the appropriate CVERepository: API client if AVIP_API_URL is set, else local SQLite."""
+    api_url = os.environ.get("AVIP_API_URL")
+    if api_url:
+        from depwolf.infrastructure.api_client import ApiClientRepository
+        print(f"[api] using cloud API: {api_url}", file=sys.stderr)
+        return ApiClientRepository(api_url)
+    from depwolf.infrastructure.store import SqliteIndexStore
+    return SqliteIndexStore()
+
+
 def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_path) -> int:
     if not _require_db():
         return 2
 
+    store = _get_store()
     from depwolf.application.scanner import collect_project
 
     native = None
@@ -260,6 +276,7 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
         cve_ids,
         stack or None,
         os_filter,
+        store=store,
         refs=findings,
         plan=native and native.get("plan"),
         plan_conf=native and native.get("plan_conf"),
@@ -281,7 +298,7 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
                 dep_index[d["name"]] = d
                 if d.get("artifact"):
                     dep_index.setdefault(d["artifact"], d)
-        _attach_remediation(result.get("prioritized", []), dep_index)
+        _attach_remediation(result.get("prioritized", []), dep_index, store=store)
     else:
         print("[scan] remediation skipped (--no-remediate)", file=sys.stderr)
 
@@ -329,9 +346,10 @@ def _emit(result: dict, threshold: int, fmt: str, save_path: str | None = None) 
 def _remediate(cves: list[str], threshold: int, fmt: str = "table") -> int:
     if not _require_db():
         return 2
+    store = _get_store()
     results = []
     for cve in cves:
-        results.append(generate_remediation(cve))
+        results.append(generate_remediation(cve, store=store))
     if fmt == "table":
         print(render_remediation_table(results, threshold))
     else:
@@ -349,9 +367,10 @@ def _remediate(cves: list[str], threshold: int, fmt: str = "table") -> int:
 def _verify(cves: list[str], version: str | None) -> int:
     if not _require_db():
         return 2
+    store = _get_store()
     results = []
     for cve in cves:
-        status = verify_fix(cve, version)
+        status = verify_fix(cve, version, store=store)
         results.append({"cve_id": cve, "installed_version": version, "status": status})
         print(f"{cve}: {status.replace('_', ' ').upper()}")
     if version is None:
@@ -418,9 +437,10 @@ def _db_info() -> int:
 def _ignore(cves: list[str], unignore: bool) -> int:
     if not _require_db():
         return 2
+    store = _get_store()
     out = []
     for cve in cves:
-        out.append(unignore_cve(cve) if unignore else ignore_cve(cve))
+        out.append(unignore_cve(cve, store=store) if unignore else ignore_cve(cve, store=store))
     print(json.dumps(out, indent=2))
     return 0
 
