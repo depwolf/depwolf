@@ -106,8 +106,59 @@ _BOX = {
     "c": "┼",
     "t": "┴",
 }
+
+# ASCII fallbacks for the box/unicode glyphs used by the renderers. Used only
+# when the output stream cannot encode the fancy glyphs (e.g. cp1252 pipes on
+# Windows), so a piped `depwolf scan . --format table` degrades to a readable
+# table instead of raising UnicodeEncodeError.
+_ASCII_TABLE = {
+    "┌": "+",
+    "┐": "+",
+    "└": "+",
+    "┘": "+",
+    "─": "-",
+    "│": "|",
+    "┬": "+",
+    "┤": "+",
+    "├": "+",
+    "┴": "+",
+    "┼": "+",
+    "╔": "+",
+    "╗": "+",
+    "╚": "+",
+    "╝": "+",
+    "═": "=",
+    "║": "|",
+    "╭": "+",
+    "╮": "+",
+    "╰": "+",
+    "╯": "+",
+    "·": ".",
+    "…": "...",
+}
 _MAXW = [17, 20, 12, 10, 7, 12, 11, 10]
 _SEV_COLOR = {"Critical": "91", "High": "95", "Medium": "93", "Low": "94"}
+
+
+def _encode_safe(text: str, encoding: str | None = None) -> str:
+    """Return ``text`` unchanged when the stream can encode it, else degrade.
+
+    Piped or non-UTF-8 terminals (Windows cp1252) cannot represent the table
+    glyphs; this maps them to ASCII rather than crashing. ``encoding`` is
+    injectable for tests and defaults to the current stdout encoding.
+    """
+    import sys
+
+    enc = encoding or sys.stdout.encoding or "utf-8"
+    try:
+        text.encode(enc, "strict")
+        return text
+    except (UnicodeEncodeError, LookupError):
+        translated = "".join(_ASCII_TABLE.get(c, c) for c in text)
+        try:
+            return translated.encode(enc, "replace").decode(enc)
+        except (UnicodeEncodeError, LookupError):
+            return "".join(c if ord(c) < 128 else "?" for c in translated)
 
 
 def _color(text: str, code: str) -> str:
@@ -235,7 +286,7 @@ def render_table(result: dict) -> str:
         lines.append("┌" + "─" * (width + 2) + "┐")
         lines.append("│ " + foot.ljust(width) + " │")
         lines.append("└" + "─" * (width + 2) + "┘")
-    return "\n".join(lines)
+    return _encode_safe("\n".join(lines))
 
 
 def render_remediation_table(entries: list[dict], threshold: int | None = None) -> str:
@@ -297,4 +348,4 @@ def render_remediation_table(entries: list[dict], threshold: int | None = None) 
             body.append(f"verify {step}")
         lines.append("")
         lines.extend(_notch_box(title, body, color))
-    return "\n".join(lines)
+    return _encode_safe("\n".join(lines))

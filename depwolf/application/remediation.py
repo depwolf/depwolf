@@ -17,7 +17,7 @@ from depwolf.domain.model import VulnRange
 from depwolf.domain.ports import CVERepository
 from depwolf.domain.priority import compute_patch_priority
 from depwolf.domain.risk import calculate_risk
-from depwolf.domain.versions import _version_key, version_applicability
+from depwolf.domain.versions import _sanitize_bound, _version_key, format_range, version_applicability
 from depwolf.infrastructure.store import SqliteIndexStore
 
 CWE_DESCRIPTIONS: dict[str, str] = {
@@ -50,23 +50,19 @@ def _bump_version(v: str) -> str:
 
 def _fixed_of(r: VulnRange) -> str | None:
     if r.version_end_excluding:
-        return r.version_end_excluding
+        return _sanitize_bound(r.version_end_excluding)
     if r.version_end_including:
-        return _bump_version(r.version_end_including)
+        return _sanitize_bound(_bump_version(r.version_end_including))
     return None
 
 
 def _range_str(row: VulnRange) -> str:
-    parts = []
-    if row.version_start_including:
-        parts.append(f">= {row.version_start_including}")
-    elif row.version_start_excluding:
-        parts.append(f"> {row.version_start_excluding}")
-    if row.version_end_including:
-        parts.append(f"<= {row.version_end_including}")
-    elif row.version_end_excluding:
-        parts.append(f"< {row.version_end_excluding}")
-    return " and ".join(parts) if parts else "all versions"
+    return format_range(
+        row.version_start_including,
+        row.version_start_excluding,
+        row.version_end_including,
+        row.version_end_excluding,
+    )
 
 
 def _installed_applicability(installed_version: str | None, ranges: list[tuple]) -> bool | None:
@@ -153,9 +149,13 @@ def _db_lookup(
             best_product = product
             break
     if best_product is None:
-        best_product = max(rows, key=lambda r: r.cvss_score or 0.0).product
+        named = [r for r in rows if (r.product or "").strip()]
+        source = max(named, key=lambda r: r.cvss_score or 0.0) if named else rows[0]
+        best_product = (source.product or "").strip() or "unknown"
 
     cands = [r for r in rows if (r.product or "").strip() == best_product]
+    if not cands:
+        cands = rows
     with_fix = [r for r in cands if _fixed_of(r)]
     if with_fix:
         best_row = max(with_fix, key=lambda r: _version_key(_fixed_of(r) or ""))

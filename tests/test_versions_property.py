@@ -1,7 +1,7 @@
 from hypothesis import given
 from hypothesis import strategies as st
 
-from depwolf.domain.versions import _version_in_range, _version_key
+from depwolf.domain.versions import _sanitize_bound, _version_in_range, _version_key
 
 
 def _mk(v: str) -> tuple:
@@ -107,3 +107,28 @@ def test_format_range_human_readable():
     assert format_range(None, "2.0", None, None) == "> 2.0"
     assert format_range(None, None, "2.15.0", None) == "<= 2.15.0"
     assert format_range(None, None, None, None) == "all versions"
+
+
+def test_sanitize_bound_drops_junk_keeps_versions():
+    assert _sanitize_bound("3.10") == "3.10"
+    assert _sanitize_bound("1.0.1e") == "1.0.1e"
+    assert _sanitize_bound("2.0+build") == "2.0+build"
+    assert _sanitize_bound(None) is None
+    assert _sanitize_bound("tar_project") is None
+    assert _sanitize_bound("") is None
+    assert _sanitize_bound("  ") is None
+    assert _sanitize_bound("*") is None
+    assert _sanitize_bound("unknown") is None
+
+
+def test_junk_bound_is_opened_not_authoritative():
+    # versionStartIncluding="tar_project" must not suppress real matches:
+    # treated as an open (None) bound, so 3.0 stays in range.
+    assert _version_in_range("3.0", "tar_project", None, None, "3.10")
+    assert not _version_in_range("3.10", "tar_project", None, None, "3.10")
+
+
+def test_junk_bound_hidden_in_rendered_range():
+    from depwolf.domain.versions import format_range
+
+    assert format_range("tar_project", None, None, "3.10") == "< 3.10"

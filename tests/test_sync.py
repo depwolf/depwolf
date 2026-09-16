@@ -254,3 +254,60 @@ def test_download_index_uses_default_url_when_unset(tmp_path, monkeypatch):
     assert ci.download_index() is True
     assert target.exists()
     assert requested[0] == ci.DEFAULT_DB_URL
+
+
+def test_build_index_sanitizes_junk_version_bounds(tmp_path, monkeypatch):
+    """NVD junk bound ('versionStartIncluding=tar_project') is dropped at insert."""
+    import sqlite3
+
+    import depwolf.infrastructure.cpe_index as ci
+
+    target = tmp_path / "cpe_index.db"
+    monkeypatch.setattr(ci, "DB_PATH", target)
+    monkeypatch.setattr(ci, "REQ_DELAY", 0)
+    monkeypatch.setattr(ci, "_fetch_epss", lambda: {})
+    monkeypatch.setattr(ci, "_fetch_kev", lambda: set())
+    monkeypatch.setattr("depwolf.infrastructure.index_sync.write_manifest", lambda *a, **k: None)
+
+    payload = {
+        "totalResults": 1,
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "id": "CVE-2026-9538",
+                    "descriptions": [{"lang": "en", "value": "perl Archive::Tar memory exhaustion"}],
+                    "metrics": {
+                        "cvssMetricV31": [{"cvssData": {"baseScore": 7.5, "baseSeverity": "HIGH"}}]
+                    },
+                    "published": "2026-01-01T00:00:00.000",
+                    "configurations": [
+                        {
+                            "nodes": [
+                                {
+                                    "cpeMatch": [
+                                        {
+                                            "criteria": "cpe:2.3:a:perl:archive::tar:*:*:*:*:*:*:*:*",
+                                            "versionStartIncluding": "tar_project",
+                                            "versionEndExcluding": "3.10",
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                }
+            }
+        ],
+    }
+    monkeypatch.setattr(ci, "fetch_nvd_page", lambda start, last_mod=None: payload)
+
+    ci.build_index(full_sync=True)
+
+    conn = sqlite3.connect(str(target))
+    row = conn.execute(
+        "SELECT version_start_including, version_end_excluding FROM cpe_index WHERE cve_id='CVE-2026-9538'"
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] is None, "junk start bound must not be persisted"
+    assert row[1] == "3.10"

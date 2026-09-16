@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import LOG4J_ROWS
 from depwolf.infrastructure.cpe_index import _ensure_schema
-
 from server import main
+from tests.conftest import LOG4J_ROWS
 
 
 @pytest.fixture

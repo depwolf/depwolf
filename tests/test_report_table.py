@@ -3,7 +3,7 @@
 import sys
 from unittest import mock
 
-from depwolf.interfaces.report import render_remediation_table, render_table
+from depwolf.interfaces.report import _encode_safe, render_remediation_table, render_table
 
 _RESULT = {
     "total_scanned": 148,
@@ -130,3 +130,19 @@ def test_render_remediation_table_no_applicable_column():
 def test_render_remediation_table_no_threshold_banner():
     out = render_remediation_table([_REMED])
     assert "at/above threshold" not in out
+
+
+def test_encode_safe_keeps_utf8_glyphs():
+    assert _encode_safe("┌─┐ · …", encoding="utf-8") == "┌─┐ · …"
+
+
+def test_encode_safe_degrades_to_ascii_on_cp1252():
+    out = _encode_safe("╔═╗ ║│ ┌─┐ · …", encoding="cp1252")
+    assert out == "+=+ || +-+ . ..."
+    assert "\u2500" not in out and "\u2570" not in out
+
+
+def test_encode_safe_survives_unknown_encoding():
+    out = _encode_safe("┌ cache é ┐", encoding="ascii")
+    assert "cache" in out
+    assert out.isascii()

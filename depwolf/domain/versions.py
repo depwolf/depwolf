@@ -14,6 +14,24 @@ def _normalize(s: str) -> str:
     return s
 
 
+def _sanitize_bound(value: str | None) -> str | None:
+    """Drop non-version junk from a range bound.
+
+    A bound that contains no digit cannot be a version (e.g. NVD rows carrying
+    ``versionStartIncluding="tar_project"``) and corrupts both range checks and
+    rendered ranges if left verbatim. Treat such a bound as open (None): it
+    never suppresses a real match and never fabricates one.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in ("*", "-"):
+        return None
+    if not re.search(r"\d", s):
+        return None
+    return s
+
+
 def _parse_cpe23(cpe_str: str) -> dict | None:
     parts = cpe_str.split(":")
     if len(parts) < 6:
@@ -54,6 +72,10 @@ def _version_key(v: str) -> tuple:
 
 
 def _version_in_range(version: str, start_incl, start_excl, end_incl, end_excl) -> bool:
+    start_incl = _sanitize_bound(start_incl)
+    start_excl = _sanitize_bound(start_excl)
+    end_incl = _sanitize_bound(end_incl)
+    end_excl = _sanitize_bound(end_excl)
     v = _version_key(version)
     if start_incl and v < _version_key(start_incl):
         return False
@@ -91,7 +113,15 @@ def version_applicability(version: str | None, ranges: list[tuple]) -> bool | No
 
 
 def format_range(start_incl, start_excl, end_incl, end_excl) -> str:
-    """Human-readable version range, e.g. '>= 2.0, < 2.15.0'."""
+    """Human-readable version range, e.g. '>= 2.0, < 2.15.0'.
+
+    Junk bounds (non-version strings) are sanitized to open bounds before
+    rendering, so garbage like ``>= tar_project and < 3.10`` never appears.
+    """
+    start_incl = _sanitize_bound(start_incl)
+    start_excl = _sanitize_bound(start_excl)
+    end_incl = _sanitize_bound(end_incl)
+    end_excl = _sanitize_bound(end_excl)
     parts = []
     if start_incl:
         parts.append(f">= {start_incl}")

@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from depwolf.domain.versions import _parse_cpe23
+from depwolf.domain.versions import _parse_cpe23, _sanitize_bound
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +284,10 @@ def build_index(full_sync: bool = False):
                     start_e = match.get("versionStartExcluding")
                     end_i = match.get("versionEndIncluding")
                     end_e = match.get("versionEndExcluding")
+                start_i = _sanitize_bound(start_i)
+                start_e = _sanitize_bound(start_e)
+                end_i = _sanitize_bound(end_i)
+                end_e = _sanitize_bound(end_e)
                 db.execute(
                     """
                     INSERT INTO cpe_index

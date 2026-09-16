@@ -125,7 +125,7 @@ depwolf scan . --format table
 
 ```bash
 cd ~/depwolf
-.venv/bin/python -m depwolf sync         # download prebuilt
+.venv/bin/depwolf sync         # download prebuilt
 # or, from the cloud box with NVD key:
 export AVIP_NVD_API_KEY=xxx
 .venv/bin/python -c "from depwolf.infrastructure.cpe_index import build_index; build_index(full_sync=True)"
@@ -134,5 +134,5 @@ export AVIP_NVD_API_KEY=xxx
 Make it a cron job to keep the index fresh:
 
 ```
-0 2 * * * cd /home/ubuntu/depwolf && AVIP_DB_PATH=/data/cpe_index.db .venv/bin/python -m depwolf sync
+0 2 * * * cd /home/ubuntu/depwolf && AVIP_DB_PATH=/data/cpe_index.db .venv/bin/depwolf sync
 ```

@@ -254,3 +254,62 @@ def test_remediation_standalone_infers_known_ecosystem(index_store):
     assert "org.apache.logging.log4j:log4j-core" in " ".join(rem["patch_commands"])
     assert "mvn dependency:tree" in rem["verification"]
     assert rem["recommended_action"].startswith("Upgrade log4j-core to 2.15.0 or later (Maven dependency")
+
+
+# ---- data-quality: junk range bounds and empty products ------------------
+#
+# NVD rows occasionally carry non-version bounds (e.g. CVE-2026-9538's
+# versionStartIncluding="tar_project"). These must never leak into rendered
+# ranges (`>= tar_project and < 3.10`) or suppress real matches.
+
+
+def _insert_dirty_row(index_store, product="archive::tar", start="tar_project"):
+    conn = index_store.open()
+    conn.execute(
+        """INSERT INTO cpe_index
+           (vendor, product, version_start_including, version_start_excluding,
+            version_end_including, version_end_excluding, cve_id, description,
+            cvss_score, cvss_severity, epss_score, kev, published_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "perl",
+            product,
+            start,
+            None,
+            None,
+            "3.10",
+            "CVE-2026-9538",
+            "perl Archive::Tar memory exhaustion on untrusted tar input",
+            7.5,
+            "HIGH",
+            0.00448,
+            0,
+            "2026-01-01T00:00:00.000",
+        ),
+    )
+    conn.commit()
+    index_store.close(conn)
+
+
+def test_remediation_hides_junk_version_bound(index_store):
+    _insert_dirty_row(index_store)
+    rem = generate_remediation("CVE-2026-9538", store=index_store)
+    assert rem["found"] is True
+    assert "tar_project" not in " ".join(rem["affected_versions"])
+    assert rem["affected_versions"] == ["< 3.10"]
+    assert rem["fixed_version"] == "3.10"
+
+
+def test_verify_fix_ignores_junk_source_bound(index_store):
+    _insert_dirty_row(index_store)
+    # ">= tar_project" is treated as an open bound, never an authoritative one.
+    assert verify_fix("CVE-2026-9538", "3.5", store=index_store) == "still_vulnerable"
+    assert verify_fix("CVE-2026-9538", "3.10", store=index_store) == "fixed"
+
+
+def test_remediation_survives_empty_product_rows(index_store):
+    _insert_dirty_row(index_store, product="")
+    rem = generate_remediation("CVE-2026-9538", store=index_store)
+    assert rem["found"] is True
+    assert rem["cve_id"] == "CVE-2026-9538"
+    assert rem["fixed_version"] == "3.10"

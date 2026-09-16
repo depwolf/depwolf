@@ -396,3 +396,11 @@ def test_java_version_range_gate_yes_and_no():
 
     yes2 = prioritize_cves(["CVE-2021-44228"], "org.apache.logging.log4j:log4j-core 2.16.0", store=store)
     assert "CVE-2021-44228" in {f["cve_id"] for f in yes2["prioritized"]}
+
+
+def test_junk_version_bound_is_open_not_suppressing():
+    # A row whose start bound is garbage ("tar_project") must not push a real
+    # version out of range; the bound is treated as open.
+    assert version_applicability("3.5", [("tar_project", None, None, "3.10")]) is True
+    assert version_applicability("3.10", [("tar_project", None, None, "3.10")]) is False
+    assert version_applicability("3.5", [(None, None, "tar_project", None)]) is True
