@@ -484,7 +484,7 @@ def deps_to_stack(deps: list[dict]) -> str:
 
 def collect_project(root: Path, store: CVERepository | None = None) -> dict:
     """Discover manifests and resolve the CVE candidates they map to (no funnel)."""
-    from depwolf.application.matcher import match_plan_full
+    from depwolf.application.matcher import match_plan_full_plus
 
     manifests = find_manifests(root)
     deps = parse_manifests(manifests)
@@ -497,8 +497,9 @@ def collect_project(root: Path, store: CVERepository | None = None) -> dict:
             "stack": "",
             "cve_ids": [],
             "plan_conf": {},
+            "plan_info": {},
         }
-    plan, plan_conf = match_plan_full(stack, store=store)
+    plan, plan_conf, plan_info = match_plan_full_plus(stack, store=store)
     return {
         "manifests": [str(m) for m in manifests],
         "deps": deps,
@@ -506,6 +507,7 @@ def collect_project(root: Path, store: CVERepository | None = None) -> dict:
         "cve_ids": list(plan),
         "plan": plan,
         "plan_conf": plan_conf,
+        "plan_info": plan_info,
     }
 
 
@@ -533,6 +535,7 @@ def scan_project(root: Path, store: CVERepository | None = None) -> dict:
         store=store,
         plan=collected["plan"],
         plan_conf=collected["plan_conf"],
+        plan_info=collected.get("plan_info"),
     )
     result["source"] = "manifest-scan"
     result["manifests"] = collected["manifests"]

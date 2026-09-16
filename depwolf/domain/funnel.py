@@ -38,6 +38,15 @@ class FilterContext:
     matched_row: VulnRange | None = None
     affected_assets: list[str] = field(default_factory=list)
     match_confidence: str | None = None
+    # Phase 1 (spec §2/§13/§15/§16): how the finding's product was resolved, and
+    # the component identity it resolved through (purl/ecosystem/vendor/product).
+    evidence: list[str] = field(default_factory=list)
+    component: dict | None = None
+    # original stack product -> resolved index product, only when resolution
+    # went through a purl/CPE alias (e.g. ``torch`` -> ``pytorch``). Filters
+    # evaluate applicability against the resolved product but keep the original
+    # dependency name for reporting.
+    asset_resolutions: dict[str, str] = field(default_factory=dict)
 
     @property
     def dropped(self) -> bool:

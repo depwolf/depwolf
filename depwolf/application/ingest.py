@@ -80,12 +80,13 @@ def dedupe_cves(refs: list[CVEReference]) -> list[CVEReference]:
     """Keep one CVEReference per CVE ID, merging context from later duplicates."""
     seen: dict[str, CVEReference] = {}
     for r in refs:
-        existing = seen.get(r.cve_id)
+        cve_id = r.cve_id.strip().upper()
+        existing = seen.get(cve_id)
         if existing is None:
-            seen[r.cve_id] = r
+            seen[cve_id] = r
             continue
-        seen[r.cve_id] = CVEReference(
-            cve_id=r.cve_id,
+        seen[cve_id] = CVEReference(
+            cve_id=cve_id,
             pkg=r.pkg or existing.pkg,
             installed_version=r.installed_version or existing.installed_version,
             fixed_version=r.fixed_version or existing.fixed_version,
@@ -93,6 +94,8 @@ def dedupe_cves(refs: list[CVEReference]) -> list[CVEReference]:
             target=r.target or existing.target,
             source=existing.source,
             confidence=max(r.confidence, existing.confidence),
+            purl=r.purl or existing.purl,
+            ecosystem=r.ecosystem or existing.ecosystem,
         )
     return list(seen.values())
 
@@ -109,6 +112,12 @@ def _ver_of(f) -> str | None:
     return f.get("installed_version") if isinstance(f, dict) else None
 
 
+def _purl_of(f) -> str | None:
+    if isinstance(f, CVEReference):
+        return f.purl
+    return f.get("purl") if isinstance(f, dict) else None
+
+
 def findings_stack(findings) -> str:
     """Build a 'pkg version' stack text from findings for FP-reducer context."""
     lines = []
@@ -116,6 +125,9 @@ def findings_stack(findings) -> str:
         pkg = _pkg_of(f)
         if not pkg:
             continue
+        purl = _purl_of(f)
+        if purl:
+            lines.append(f"purl {purl}")
         ver = _ver_of(f)
         line = f"{pkg} {ver}".strip() if ver else str(pkg)
         lines.append(line)

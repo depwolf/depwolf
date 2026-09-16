@@ -42,6 +42,9 @@ class CVEReference:
     source: str = "unknown"
     # trivy | grype | snyk | sarif | codeql | semgrep | dependency-check | text | heuristic | manifest
     confidence: float = 1.0
+    # Package URL when the scanner emits one (component identity for resolution).
+    purl: str | None = None
+    ecosystem: str | None = None  # purl type (pypi / npm / deb / ...), when known
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +56,8 @@ class CVEReference:
             "target": self.target,
             "source": self.source,
             "confidence": self.confidence,
+            "purl": self.purl,
+            "ecosystem": self.ecosystem,
         }
 
     @classmethod
@@ -66,6 +71,8 @@ class CVEReference:
             target=d.get("target"),
             source=str(d.get("source") or "unknown"),
             confidence=float(d.get("confidence") or 1.0),
+            purl=d.get("purl"),
+            ecosystem=d.get("ecosystem"),
         )
 
 
@@ -201,6 +208,8 @@ class Asset:
 
     product: str
     version: str | None
+    purl: str | None = None
+    ecosystem: str | None = None
 
 
 @dataclass(frozen=True)

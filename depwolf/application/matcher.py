@@ -16,8 +16,9 @@ import logging
 import re
 
 from depwolf.application.filters import default_funnel_filters
+from depwolf.domain.component import component_from_purl
 from depwolf.domain.funnel import FilterContext, Funnel
-from depwolf.domain.match import asset_applicability, better_confidence, row_os
+from depwolf.domain.match import _CONF_ORDER, _compact, asset_applicability, better_confidence, row_os
 from depwolf.domain.model import (
     Asset,
     CVEReference,
@@ -69,6 +70,14 @@ def parse_stack(text: str) -> list[dict]:
             continue
         if re.match(r"^os\s*[:=]\s*\w+$", line, re.IGNORECASE):
             continue
+        mp = re.match(r"^purl\s+(\S+)\s*$", line, re.IGNORECASE)
+        if mp:
+            comp = component_from_purl(mp.group(1))
+            if comp:
+                items.append(
+                    {"product": comp.name, "version": comp.version, "purl": comp.purl, "ecosystem": comp.ecosystem}
+                )
+            continue
         m = re.match(
             r"^([a-zA-Z0-9._+\-:@/]+(?:\s+[a-zA-Z0-9._+\-:@/]+)*)"
             r"\s+(v?[0-9][0-9a-zA-Z._+:-]*)$",
@@ -95,7 +104,19 @@ def _assets(stack_text: str | None) -> list[Asset]:
         version = item["version"]
         existing = by_product.get(product)
         if existing is None or (version and not existing.version):
-            by_product[product] = Asset(product=product, version=version)
+            by_product[product] = Asset(
+                product=product,
+                version=version,
+                purl=item.get("purl"),
+                ecosystem=item.get("ecosystem"),
+            )
+        elif item.get("purl") and not existing.purl:
+            by_product[product] = Asset(
+                product=product,
+                version=existing.version,
+                purl=item["purl"],
+                ecosystem=item.get("ecosystem") or existing.ecosystem,
+            )
     return list(by_product.values())
 
 
@@ -128,49 +149,128 @@ def unignore_cve(cve_id: str, store: CVERepository | None = None) -> dict:
 # ---- batch matching plan (Phase 3) ---------------------------------------
 
 
-def _build_plan(assets: list[Asset], repo: CVERepository) -> tuple[dict[str, list[VulnRange]], dict[str, str]]:
+def _resolution_names(asset: Asset) -> list[str]:
+    """Names to resolve for an asset: its stack product plus any curated CPE
+    product hint from its purl (e.g. ``torch`` -> ``pytorch``).
+
+    The hint is appended, never substituted, so a purl alias can only *add*
+    index rows; a package whose plain name matches still matches.
+    """
+    names = [asset.product]
+    if asset.purl:
+        comp = component_from_purl(asset.purl)
+        if comp and comp.product and comp.product != _compact(asset.product):
+            names.append(comp.product)
+    return list(dict.fromkeys(n for n in names if n))
+
+
+def _build_plan(
+    assets: list[Asset], repo: CVERepository
+) -> tuple[dict[str, list[VulnRange]], dict[str, str], dict[str, dict]]:
     """One-pass plan: resolve every stack product and fetch all CVE ranges.
 
     Constant number of repository calls (2) regardless of stack size, instead
-    of connection-per-dependency. Returns ``(cve_id -> ranges, cve_id ->
-    best match confidence)``.
+    of connection-per-dependency. Resolution is purl-aware: each asset may
+    resolve through several names (stack product + purl CPE hints) and the
+    best-confidence (vendor, product) wins for it.
+
+    Returns ``(cve_id -> ranges, cve_id -> best match confidence,
+    cve_id -> {evidence, component})``. ``evidence`` strings explain *why* a
+    product resolved the way it did; ``component`` carries the purl/ecosystem/
+    vendor/product identity for reporting. Both are additive (output keys
+    only) and Phase 1's explicability backbone.
     """
-    names = [a.product for a in assets]
-    resolved = repo.resolve_products_many(names)
-    products: list[tuple[str, str]] = []
+    pool: dict[str, list[Asset]] = {}
+    for a in assets:
+        for n in _resolution_names(a):
+            pool.setdefault(n, []).append(a)
+    resolved = repo.resolve_products_many(list(pool)) if pool else {}
+
+    resolved_to: dict[tuple[str, str], list[str]] = {}
     conf_by_product: dict[tuple[str, str], str] = {}
-    for name in names:
-        for pm in resolved.get(name, []):
-            products.append((pm.vendor, pm.product))
-            conf_by_product[(pm.vendor, pm.product)] = better_confidence(
-                conf_by_product.get((pm.vendor, pm.product)), pm.confidence
-            )
+    evidence_by_product: dict[str, list[str]] = {}
+    component_by_product: dict[str, dict] = {}
+    products: list[tuple[str, str]] = []
+    for a in assets:
+        comp = component_from_purl(a.purl) if a.purl else None
+        cands: dict[tuple[str, str], str] = {}
+        for n in _resolution_names(a):
+            for pm in resolved.get(n, []):
+                key = (pm.vendor, pm.product)
+                cands[key] = better_confidence(cands.get(key), pm.confidence)
+        best_key: tuple[str, str] | None = None
+        best_rank = -1
+        for key, conf in cands.items():
+            rank = _CONF_ORDER.get(conf, 0)
+            if rank > best_rank or (rank == best_rank and best_key is not None and key < best_key):
+                best_key, best_rank = key, rank
+        if best_key is None:
+            continue
+        resolved_to.setdefault(best_key, []).append(a.product)
+        products.append(best_key)
+        conf_by_product[best_key] = better_confidence(conf_by_product.get(best_key), cands[best_key])
+        vend, prod = best_key
+        via = ""
+        if comp and comp.product and comp.product != _compact(a.product):
+            via = f" via purl {a.purl} CPE alias '{comp.product}'"
+        elif a.purl:
+            via = f" via purl {a.purl}"
+        evidence_by_product.setdefault(a.product, []).append(
+            f"resolved '{a.product}' to {vend}/{prod} ({cands[best_key]}){via}"
+        )
+        component_by_product[a.product] = {
+            "name": comp.name if comp else a.product,
+            "version": comp.version if comp else a.version,
+            "ecosystem": comp.ecosystem if comp else a.ecosystem,
+            "namespace": comp.namespace if comp else None,
+            "purl": a.purl,
+            "vendor": vend,
+            "product": prod,
+            "asset": a.product,
+        }
+
     by_product = repo.cves_for_products(products)
     plan: dict[str, list[VulnRange]] = {}
     confidences: dict[str, str] = {}
+    info: dict[str, dict] = {}
     for (vendor, product), ranges in by_product.items():
         conf = conf_by_product.get((vendor, product), "heuristic")
         for r in ranges:
             plan.setdefault(r.cve_id, []).append(r)
             confidences[r.cve_id] = better_confidence(confidences.get(r.cve_id), conf)
-    return plan, confidences
+            entry_info = info.setdefault(r.cve_id, {"evidence": [], "component": None})
+            for a_prod in resolved_to.get((vendor, product), []):
+                for e in evidence_by_product.get(a_prod, []):
+                    if e not in entry_info["evidence"]:
+                        entry_info["evidence"].append(e)
+                if entry_info["component"] is None:
+                    entry_info["component"] = component_by_product.get(a_prod)
+    return plan, confidences, info
 
 
 def match_plan(stack_text: str, store: CVERepository | None = None) -> dict[str, list[VulnRange]]:
     """Public one-pass plan for a stack (shared by scanner and funnel)."""
-    plan, _ = match_plan_full(stack_text, store)
+    plan, _, _ = match_plan_full_plus(stack_text, store)
     return plan
+
+
+def match_plan_full_plus(
+    stack_text: str, store: CVERepository | None = None
+) -> tuple[dict[str, list[VulnRange]], dict[str, str], dict[str, dict]]:
+    """Plan plus per-CVE match confidence and evidence/component info (Phase 1)."""
+    repo = _repo(store)
+    assets = _assets(stack_text)
+    if not assets:
+        return {}, {}, {}
+    return _build_plan(assets, repo)
 
 
 def match_plan_full(
     stack_text: str, store: CVERepository | None = None
 ) -> tuple[dict[str, list[VulnRange]], dict[str, str]]:
     """Plan plus per-CVE product-match confidence (exact/alias/canonical/fuzzy)."""
-    repo = _repo(store)
-    assets = _assets(stack_text)
-    if not assets:
-        return {}, {}
-    return _build_plan(assets, repo)
+    plan, conf, _ = match_plan_full_plus(stack_text, store)
+    return plan, conf
 
 
 # ---- matching ------------------------------------------------------------
@@ -205,7 +305,7 @@ def _entry_from_row(r: VulnRange, asset: dict) -> dict:
 def match_stack(stack_text: str, store: CVERepository | None = None) -> dict:
     repo = _repo(store)
     assets = _assets(stack_text)
-    plan, _ = _build_plan(assets, repo) if assets else ({}, {})
+    plan, _, _ = _build_plan(assets, repo) if assets else ({}, {}, {})
     results: dict[str, dict] = {}
     for cve_id, rows in plan.items():
         for r in rows:
@@ -297,6 +397,10 @@ def _build_entry(
     entry["published_date"] = row.published_date
     if ctx.match_confidence:
         entry["match_confidence"] = ctx.match_confidence
+    if ctx.evidence:
+        entry["evidence"] = list(ctx.evidence)
+    if ctx.component:
+        entry["component"] = ctx.component
     if not entry.get("installed_version"):
         matched_version = next(
             (a.version for a in ctx.assets if a.product in ctx.affected_assets and a.version),
@@ -317,6 +421,7 @@ def prioritize_cves(
     policy: Policy | None = None,
     plan: dict[str, list[VulnRange]] | None = None,
     plan_conf: dict[str, str] | None = None,
+    plan_info: dict[str, dict] | None = None,
 ) -> dict:
     repo = _repo(store)
     assets = _assets(stack_text)
@@ -329,15 +434,26 @@ def prioritize_cves(
     # CVE not present in the stack (so not_found/not_in_stack stay correct).
     # `plan` may be supplied by the scanner to avoid the double query.
     if plan is None:
-        plan, confidences = _build_plan(assets, repo) if assets else ({}, {})
+        plan, confidences, info = _build_plan(assets, repo) if assets else ({}, {}, {})
     else:
         confidences = dict(plan_conf or {})
+        info = plan_info or {}
     known = dict(plan)
     extras = [c.strip().upper() for c in cve_ids if c.strip().upper() not in known]
     if extras:
         known.update(repo.cves_for_ids(extras))
 
     ref_by_id = {r.cve_id.upper(): r for r in (refs or [])}
+    # Phase 1: collect purl/CPE alias resolutions (original asset product ->
+    # resolved index product) so the funnel evaluates applicability against the
+    # product the index actually rows on, while reporting the original name.
+    asset_resolutions: dict[str, str] = {}
+    for cve_info in info.values():
+        comp = cve_info.get("component")
+        asset_prod = comp.get("asset") if isinstance(comp, dict) else None
+        resolved = comp.get("product") if isinstance(comp, dict) else None
+        if asset_prod and resolved and resolved != _compact(asset_prod):
+            asset_resolutions.setdefault(asset_prod, resolved)
     funnel = Funnel(default_funnel_filters())
     filtered_out: list[dict] = []
     prioritized: list[dict] = []
@@ -352,6 +468,9 @@ def prioritize_cves(
             os_filter=os_filter,
             ignored=ignored,
             match_confidence=confidences.get(cve_id),
+            evidence=list(dict.fromkeys((info.get(cve_id) or {}).get("evidence") or [])),
+            component=(info.get(cve_id) or {}).get("component"),
+            asset_resolutions=asset_resolutions,
         )
         funnel.run(ctx)
         if ctx.dropped:

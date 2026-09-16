@@ -280,6 +280,7 @@ def _scan(inputs, os_filter, threshold, with_remediation, fmt, save_path, stack_
         refs=findings,
         plan=native and native.get("plan"),
         plan_conf=native and native.get("plan_conf"),
+        plan_info=native and native.get("plan_info"),
     )
 
     result["total_scanned"] = len(cve_ids)
@@ -313,6 +314,14 @@ def _merge_native(a: dict | None, b: dict) -> dict:
         plan.setdefault(cve_id, rows)
     plan_conf = dict(a.get("plan_conf") or {})
     plan_conf.update(b.get("plan_conf") or {})
+    plan_info = dict(a.get("plan_info") or {})
+    for cve_id, info in (b.get("plan_info") or {}).items():
+        merged = plan_info.setdefault(cve_id, {"evidence": [], "component": None})
+        for ev in info.get("evidence") or []:
+            if ev not in merged["evidence"]:
+                merged["evidence"].append(ev)
+        if not merged["component"] and info.get("component"):
+            merged["component"] = info["component"]
     return {
         "manifests": a["manifests"] + b["manifests"],
         "deps": a["deps"] + b["deps"],
@@ -320,6 +329,7 @@ def _merge_native(a: dict | None, b: dict) -> dict:
         "cve_ids": list(dict.fromkeys(a["cve_ids"] + b["cve_ids"])),
         "plan": plan,
         "plan_conf": plan_conf,
+        "plan_info": plan_info,
     }
 
 

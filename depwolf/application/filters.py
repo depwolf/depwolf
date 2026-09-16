@@ -105,7 +105,8 @@ class NotInStackFilter:
         affected: list[str] = []
         unknown: list[str] = []
         for a in ctx.assets:
-            verdict = _asset_verdict(a, ctx.rows)
+            eff = _effective_asset(a, ctx)
+            verdict = _asset_verdict(eff, ctx.rows)
             if verdict is True:
                 if a.product not in affected:
                     affected.append(a.product)
@@ -115,7 +116,11 @@ class NotInStackFilter:
         if affected:
             ctx.affected_assets = affected
             ctx.matched_row = next(
-                (r for r in ctx.rows if any(asset_applicability(a, r) is True for a in ctx.assets)),
+                (
+                    r
+                    for r in ctx.rows
+                    if any(asset_applicability(_effective_asset(a, ctx), r) is True for a in ctx.assets)
+                ),
                 None,
             )
             return
@@ -129,11 +134,14 @@ class NotInStackFilter:
             ctx.severity = _severity_of(ctx)
             return
         product_ok = [
-            a for a in ctx.assets if any(fuzzy_product_match(_normalize(a.product), r.product) for r in ctx.rows)
+            a
+            for a in ctx.assets
+            if any(fuzzy_product_match(_normalize(_effective_asset(a, ctx).product), r.product) for r in ctx.rows)
         ]
         row_products = sorted({r.product for r in ctx.rows if r.product})
         if product_ok:
             a = product_ok[0]
+            eff = _effective_asset(a, ctx)
             ranges = " or ".join(
                 dict.fromkeys(
                     format_range(
@@ -143,7 +151,7 @@ class NotInStackFilter:
                         r.version_end_excluding,
                     )
                     for r in ctx.rows
-                    if fuzzy_product_match(_normalize(a.product), r.product)
+                    if fuzzy_product_match(_normalize(eff.product), r.product)
                 )
             )
             ctx.reason = self.name
@@ -159,6 +167,19 @@ class NotInStackFilter:
             )
         ctx.risk_score = _best_risk(ctx)
         ctx.severity = _severity_of(ctx)
+
+
+def _effective_asset(asset: Asset, ctx: FilterContext) -> Asset:
+    """Aliased view of an asset: uses the resolved index product for matching.
+
+    Purl/CPE aliases (Phase 1) resolve ``torch`` to NVD's ``pytorch``; the
+    funnel must compare against the resolved product but keep the original
+    dependency name for the affected-assets/report output.
+    """
+    resolved = (ctx.asset_resolutions or {}).get(asset.product)
+    if not resolved:
+        return asset
+    return Asset(product=resolved, version=asset.version)
 
 
 class LowRiskFilter:

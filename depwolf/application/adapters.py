@@ -59,6 +59,7 @@ class TrivyAdapter:
                         severity=vuln.get("Severity"),
                         target=result.get("Target"),
                         source="trivy",
+                        purl=(vuln.get("PkgIdentifier") or {}).get("PURL"),
                     )
                 )
         return refs
@@ -90,6 +91,8 @@ class GrypeAdapter:
                     severity=vuln.get("severity"),
                     target=target,
                     source="grype",
+                    purl=artifact.get("purl"),
+                    ecosystem=artifact.get("type"),
                 )
             )
         return refs
@@ -303,6 +306,7 @@ _VERSION_KEYS = ("installedversion", "affectedversion", "currentversion", "versi
 _FIXED_KEYS = ("fixedversion", "fixversion", "fixed_version")
 _SEV_KEYS = ("severity", "criticality", "level", "score")
 _TARGET_KEYS = ("target", "file", "path", "artifactlocation", "uri", "location")
+_PURL_KEYS = ("purl", "packageurl")
 
 
 def _norm_key(k: str) -> str:
@@ -335,6 +339,7 @@ def _heuristic_walk(d: Any, sink: list[CVEReference], parent: dict | None = None
                     fixed_version=_first(d, _FIXED_KEYS) or _first(ctx, _FIXED_KEYS),
                     severity=_first(d, _SEV_KEYS) or _first(ctx, _SEV_KEYS),
                     target=_first(d, _TARGET_KEYS) or _first(ctx, _TARGET_KEYS),
+                    purl=_first(d, _PURL_KEYS) or _first(ctx, _PURL_KEYS),
                     source="heuristic",
                     confidence=0.3,
                 )
